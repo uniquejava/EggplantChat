@@ -21,7 +21,6 @@ void main() {
       a.start(listenPort: 0, discovery: false),
       b.start(listenPort: 0, discovery: false),
     ]);
-    b.pairingUntil = DateTime.now().add(const Duration(minutes: 5));
   });
 
   tearDown(() async {
@@ -29,7 +28,7 @@ void main() {
     await temporary.delete(recursive: true);
   });
 
-  Future<Peer> pair() => a.pair('127.0.0.1', b.port, b.pairingCode);
+  Future<Peer> connect() => a.connect('127.0.0.1', b.port);
 
   Future<HttpClientResponse> post(
     HttpClient client,
@@ -45,14 +44,28 @@ void main() {
     return request.close();
   }
 
-  test('pairing rejects wrong codes and a closed pairing window', () async {
-    final wrong = b.pairingCode == '100000' ? '100001' : '100000';
+  test('connects directly without a code or an open dialog', () async {
+    final peer = await connect();
+    expect(peer.id, b.id);
+    expect(b.peers[a.id]!.name, 'Mac A');
+    final token = peer.token;
+    final inboundToken = peer.inboundToken;
+    final reconnected = await connect();
+    expect(reconnected.token, token);
+    expect(reconnected.inboundToken, inboundToken);
+    expect(a.peers, hasLength(1));
+    expect(b.peers, hasLength(1));
+  });
+
+  test('rejects invalid addresses and mismatched device identities', () async {
+    for (final address in ['example.com', '8.8.8.8', '::1']) {
+      await expectLater(a.connect(address, b.port), throwsFormatException);
+    }
     await expectLater(
-      a.pair('127.0.0.1', b.port, wrong),
-      throwsA(isA<HttpException>()),
+      a.connect('127.0.0.1', b.port, expectedId: newId()),
+      throwsFormatException,
     );
-    b.pairingUntil = null;
-    await expectLater(pair(), throwsA(isA<HttpException>()));
+    await expectLater(a.connect('127.0.0.1', a.port), throwsFormatException);
     expect(a.peers, isEmpty);
     expect(b.peers, isEmpty);
   });
@@ -60,7 +73,7 @@ void main() {
   test(
     'rich text survives bidirectional HTTPS transfer, retry and restart',
     () async {
-      final peer = await pair();
+      final peer = await connect();
       final delta = [
         {
           'insert': '中文标题',
@@ -102,13 +115,25 @@ void main() {
       await a.start(listenPort: 0, discovery: false);
       expect(a.messages.first.delta, delta);
       expect(a.peers.values.single.fingerprint, b.fingerprint);
+      final reconnected = await connect();
+      await a.sendText(reconnected, [
+        {'insert': '重启后直连\n'},
+      ]);
+      expect(a.messages.last.status, 'sent');
+      expect(b.messages.last.plainText, '重启后直连\n');
+      await b.sendText(b.peers[a.id]!, [
+        {'insert': '重启后收到\n'},
+      ]);
+      expect(b.messages.last.plainText, '重启后收到\n');
+      expect(a.messages.last.plainText, '重启后收到\n');
+      expect(a.messages.last.status, 'sent');
     },
   );
 
   test(
     'streams attachments, keeps a local snapshot, and deduplicates retries',
     () async {
-      final peer = await pair();
+      final peer = await connect();
       final bytes = List.generate(256 * 1024 + 17, (i) => i % 251);
       final file = await File('${temporary.path}/报告与图片.bin')
           .writeAsBytes(bytes);
@@ -129,11 +154,15 @@ void main() {
       await a.sendFile(peer, image);
       expect(b.messages.last.kind, 'image');
       expect(await File(b.messages.last.path!).readAsBytes(), png);
+      await b.sendFile(b.peers[a.id]!, image);
+      expect(a.messages.last.outgoing, isFalse);
+      expect(a.messages.last.status, 'sent');
+      expect(await File(a.messages.last.path!).readAsBytes(), png);
     },
   );
 
   test('certificate pinning rejects a changed device certificate', () async {
-    final peer = await pair();
+    final peer = await connect();
     a.peers[peer.id] = Peer.fromJson({
       ...peer.toJson(),
       'fingerprint': '0' * 64,
@@ -153,7 +182,7 @@ void main() {
       final unauthorized = await post(client, '/v1/message', {});
       expect(unauthorized.statusCode, HttpStatus.unauthorized);
       await unauthorized.drain<void>();
-      final peer = await pair();
+      final peer = await connect();
       final invalid = await post(client, '/v1/message', {
         'id': newId(),
         'kind': 'text',
@@ -170,7 +199,7 @@ void main() {
   );
 
   test('failed file integrity checks remove partial files', () async {
-    final peer = await pair();
+    final peer = await connect();
     final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
     addTearDown(() => client.close(force: true));
     final request = await client.postUrl(
@@ -205,33 +234,55 @@ void main() {
     expect(partials, isEmpty);
   });
 
-  test('concurrent pairing requests cannot bypass the attempt limit', () async {
-    final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
-    addTearDown(() => client.close(force: true));
-    final wrong = b.pairingCode == '100000' ? '100001' : '100000';
-    final requests = await Future.wait(
-      List.generate(12, (_) async {
-        final request = await client.postUrl(
-          Uri.parse('https://127.0.0.1:${b.port}/v1/pair'),
-        );
-        request.write('{');
-        await request.flush();
-        return request;
-      }),
-    );
-    final errors = await Future.wait(
-      requests.map((request) async {
-        request.write('"code":"$wrong"}');
-        final response = await request.close();
-        expect(response.statusCode, HttpStatus.forbidden);
-        return jsonDecode(await utf8.decoder.bind(response).join())['error'];
-      }),
-    );
-    expect(errors.where((error) => error == '配对码错误'), hasLength(5));
+  test('simultaneous direct connections keep both directions usable', () async {
+    await Future.wait([
+      a.connect('127.0.0.1', b.port),
+      b.connect('127.0.0.1', a.port),
+    ]);
+    await Future.wait([
+      a.sendText(a.peers[b.id]!, [
+        {'insert': '来自 A\n'},
+      ]),
+      b.sendText(b.peers[a.id]!, [
+        {'insert': '来自 B\n'},
+      ]),
+    ]);
+    expect(a.messages.where((m) => m.outgoing).single.status, 'sent');
+    expect(b.messages.where((m) => m.outgoing).single.status, 'sent');
+    expect(a.messages.where((m) => !m.outgoing).single.plainText, '来自 B\n');
+    expect(b.messages.where((m) => !m.outgoing).single.plainText, '来自 A\n');
   });
 
+  test(
+    'direct connection cannot overwrite an existing device identity',
+    () async {
+      final peer = await connect();
+      final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
+      addTearDown(() => client.close(force: true));
+      final original = b.peers[a.id]!;
+      for (final changes in [
+        {'fingerprint': '0' * 64},
+        {'token': newId() + newId()},
+      ]) {
+        final response = await post(client, '/v1/connect', {
+          'targetId': b.id,
+          'id': a.id,
+          'name': a.name,
+          'port': a.port,
+          'platform': Platform.operatingSystem,
+          'fingerprint': a.fingerprint,
+          'token': peer.inboundToken,
+          ...changes,
+        });
+        expect(response.statusCode, HttpStatus.badRequest);
+        await response.drain<void>();
+        expect(b.peers[a.id], same(original));
+      }
+    },
+  );
+
   test('text retry persists a message after a failed disk write', () async {
-    final peer = await pair();
+    final peer = await connect();
     final blocker = await Directory('${b.directory.path}/state.json.tmp')
         .create();
     await a.sendText(peer, [
@@ -249,7 +300,7 @@ void main() {
   });
 
   test('restart marks interrupted incoming attachments as failed', () async {
-    final peer = await pair();
+    final peer = await connect();
     final file = await File('${temporary.path}/data.bin').writeAsBytes([1, 2]);
     await a.sendFile(peer, file);
     b.messages.single.status = 'receiving';

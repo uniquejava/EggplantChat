@@ -31,6 +31,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _selected;
   String? _notice;
   String _query = '';
+  String? _connectingHost;
   int _messageCount = 0;
   LanService get service => widget.service;
 
@@ -98,19 +99,37 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
 
-  Future<void> _pair({Peer? candidate}) async {
-    service.pairingUntil = DateTime.now().add(const Duration(minutes: 5));
-    final host = TextEditingController(text: candidate?.host ?? '');
-    final port = TextEditingController(text: '${candidate?.port ?? lanPort}');
-    final code = TextEditingController();
+  Future<void> _connectDevice(Peer candidate) async {
+    if (_connectingHost != null) return;
+    setState(() {
+      _connectingHost = candidate.host;
+      _notice = null;
+    });
+    try {
+      final peer = await service.connect(
+        candidate.host,
+        candidate.port,
+        expectedId: candidate.id,
+      );
+      if (mounted) _select(peer.id);
+    } on Object catch (error) {
+      _error('$error');
+    } finally {
+      if (mounted) setState(() => _connectingHost = null);
+    }
+  }
+
+  Future<void> _connect() async {
+    final host = TextEditingController();
+    final port = TextEditingController(text: '$lanPort');
     var busy = false;
     String? error;
     await showShadDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, update) => ShadDialog(
-          title: const Text('连接设备'),
-          description: const Text('两台电脑都打开此窗口，然后在一台电脑上输入对方的配对码。'),
+          title: const Text('通过 IP 连接'),
+          description: const Text('输入另一台电脑的局域网地址即可连接，无需配对码。'),
           constraints: const BoxConstraints(maxWidth: 460),
           actions: [
             ShadButton.outline(
@@ -127,11 +146,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   error = null;
                 });
                 try {
-                  final peer = await service.pair(
+                  final peer = await service.connect(
                     host.text.trim(),
                     int.tryParse(port.text.trim()) ?? 0,
-                    code.text.trim(),
-                    expectedId: candidate?.id,
                   );
                   if (mounted) _select(peer.id);
                   if (dialogContext.mounted) Navigator.of(dialogContext).pop();
@@ -161,20 +178,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      '本机配对码 · 5 分钟内有效',
-                      style: TextStyle(fontSize: 12),
-                    ),
+                    const Text('本机地址', style: TextStyle(fontSize: 12)),
                     const SizedBox(height: 8),
-                    SelectableText(
-                      service.pairingCode,
-                      style: const TextStyle(
-                        fontSize: 30,
-                        letterSpacing: 8,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
                     SelectableText(
                       service.addresses
                           .map((ip) => '$ip:${service.port}')
@@ -210,14 +215,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              const Text('对方配对码', style: TextStyle(fontSize: 12)),
-              const SizedBox(height: 6),
-              ShadInput(
-                controller: code,
-                placeholder: const Text('六位数字'),
-                maxLength: 6,
-              ),
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
@@ -231,7 +228,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               const SizedBox(height: 12),
               Text(
-                '配对后，此设备可以向你发送消息和附件。',
+                '连接会自动保存，下次打开即可继续聊天。',
                 style: TextStyle(
                   fontSize: 11,
                   color: ShadTheme.of(context).colorScheme.mutedForeground,
@@ -242,12 +239,10 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
-    service.pairingUntil = null;
     // Dialog exit animations may still reference its text controllers.
     await Future<void>.delayed(const Duration(milliseconds: 250));
     host.dispose();
     port.dispose();
-    code.dispose();
   }
 
   Future<void> _settings() async {
@@ -351,7 +346,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          _icon('连接设备', LucideIcons.plus, _pair),
+          _icon('通过 IP 连接', LucideIcons.plus, _connect),
           const Spacer(),
           _icon(
             '切换明暗主题',
@@ -412,7 +407,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
                   ),
                 ),
-                _icon('连接设备', LucideIcons.plus, _pair),
+                _icon('通过 IP 连接', LucideIcons.plus, _connect),
               ],
             ),
           ),
@@ -536,7 +531,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   ShadButton.ghost(
                     height: 64,
                     expands: true,
-                    onPressed: () => _pair(candidate: peer),
+                    onPressed: _connectingHost == null
+                        ? () => _connectDevice(peer)
+                        : null,
                     child: Row(
                       children: [
                         _avatar(peer, size: 34),
@@ -552,7 +549,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                 style: const TextStyle(fontSize: 12),
                               ),
                               Text(
-                                peer.host,
+                                _connectingHost == peer.host
+                                    ? '正在连接…'
+                                    : peer.host,
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: colors.mutedForeground,
@@ -654,7 +653,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              '在两台电脑上打开 EggplantChat，连接后发送文字、图片和附件。',
+              '点击左侧附近设备即可聊天，也可以通过固定 IP 连接。',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 13,
@@ -664,9 +663,9 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: 24),
             ShadButton(
-              onPressed: _pair,
+              onPressed: _connect,
               leading: const Icon(LucideIcons.plus, size: 16),
-              child: const Text('连接设备'),
+              child: const Text('通过 IP 连接'),
             ),
             const SizedBox(height: 18),
             Text(
@@ -723,7 +722,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                 ),
               ),
-              ShadBadge.outline(child: const Text('已配对')),
+              ShadBadge.outline(child: const Text('局域网直连')),
             ],
           ),
         ),

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math';
 
 import 'package:basic_utils/basic_utils.dart';
 import 'package:crypto/crypto.dart';
@@ -12,6 +11,16 @@ import 'models.dart';
 const lanPort = 53318;
 const discoveryPort = 53319;
 const _jsonLimit = 2 * 1024 * 1024;
+
+bool _isLanAddress(InternetAddress address) {
+  if (address.type != InternetAddressType.IPv4) return false;
+  final bytes = address.rawAddress;
+  return address.isLoopback ||
+      bytes[0] == 10 ||
+      (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+      (bytes[0] == 192 && bytes[1] == 168) ||
+      (bytes[0] == 169 && bytes[1] == 254);
+}
 
 Map<String, String> _credentials() {
   final pair = CryptoUtils.generateEcKeyPair();
@@ -39,14 +48,11 @@ class LanService {
   final List<ChatMessage> messages = [];
   final Set<String> _inflight = {};
   final Set<String> _probing = {};
-  final Map<String, (int, DateTime)> _attempts = {};
+  final Map<String, String> _connectionTokens = {};
   final Set<HttpClient> _clients = {};
   late String id;
   String name;
   late String fingerprint;
-  final String pairingCode = (100000 + Random.secure().nextInt(900000))
-      .toString();
-  DateTime? pairingUntil;
   String? warning;
   List<String> addresses = [];
   HttpServer? _server;
@@ -55,7 +61,6 @@ class LanService {
   Future<void> _writes = Future.value();
   bool _closed = false;
   int get port => _server!.port;
-  bool get pairingOpen => pairingUntil?.isAfter(DateTime.now()) ?? false;
   void notify() {
     if (!_closed) _changes.add(null);
   }
@@ -314,38 +319,63 @@ class LanService {
     }
   }
 
-  Future<Peer> pair(
+  String _tokenFor(String remoteId) => _connectionTokens.putIfAbsent(
+    remoteId,
+    () => peers[remoteId]?.inboundToken ?? newId() + newId(),
+  );
+
+  Future<Peer> connect(
     String host,
-    int remotePort,
-    String code, {
+    int remotePort, {
     String? expectedId,
   }) async {
-    if (InternetAddress.tryParse(host) == null) {
-      throw const FormatException('请输入对方的 IPv4 地址');
+    final address = InternetAddress.tryParse(host);
+    if (address == null || !_isLanAddress(address)) {
+      throw const FormatException('请输入对方的局域网 IPv4 地址');
     }
     checkedPort(remotePort);
-    if (!RegExp(r'^\d{6}$').hasMatch(code)) {
-      throw const FormatException('请输入六位配对码');
-    }
-    final inboundToken = newId() + newId();
+    final known = expectedId != null
+        ? peers[expectedId]
+        : peers.values
+              .where((peer) => peer.host == host && peer.port == remotePort)
+              .firstOrNull;
     String? remoteFingerprint;
-    // First pairing trusts the LAN endpoint; subsequent connections pin its certificate.
-    final json = await _post(
-      host,
-      remotePort,
-      '/v1/pair',
-      {
-        'code': code,
-        'id': id,
-        'name': name,
-        'port': port,
-        'platform': Platform.operatingSystem,
-        'fingerprint': fingerprint,
-        'token': inboundToken,
-      },
-      onCertificate: (cert) =>
-          remoteFingerprint = sha256.convert(cert.der).toString(),
-    );
+    late Map<String, dynamic> hello;
+    try {
+      hello = await _post(
+        host,
+        remotePort,
+        '/v1/hello',
+        {},
+        pin: known?.fingerprint,
+        onCertificate: (cert) =>
+            remoteFingerprint = sha256.convert(cert.der).toString(),
+      );
+    } on HttpException catch (error) {
+      if (error.message == '请先配对设备') {
+        throw const HttpException('对方使用旧版 EggplantChat，请更新后使用免配对直连');
+      }
+      rethrow;
+    }
+    final remoteId = checkedId(hello, 'id');
+    if (remoteId == id || expectedId != null && remoteId != expectedId) {
+      throw const FormatException('对方的设备身份不匹配');
+    }
+    final existing = peers[remoteId];
+    if (existing != null && existing.fingerprint != remoteFingerprint) {
+      throw const HandshakeException('对方的设备证书已变化');
+    }
+    // Reserve the same token for simultaneous connections from both devices.
+    final inboundToken = _tokenFor(remoteId);
+    final json = await _post(host, remotePort, '/v1/connect', {
+      'targetId': remoteId,
+      'id': id,
+      'name': name,
+      'port': port,
+      'platform': Platform.operatingSystem,
+      'fingerprint': fingerprint,
+      'token': inboundToken,
+    }, pin: remoteFingerprint);
     final peer = Peer.fromJson({
       ...json,
       'host': host,
@@ -353,7 +383,7 @@ class LanService {
       'fingerprint': remoteFingerprint,
       'inboundToken': inboundToken,
     });
-    if (peer.id == id || expectedId != null && peer.id != expectedId) {
+    if (peer.id != remoteId) {
       throw const FormatException('对方的设备身份不匹配');
     }
     peer.lastSeen = DateTime.now();
@@ -380,33 +410,40 @@ class LanService {
         await _reply(request, 405, {'error': '不支持的请求'});
         return;
       }
-      if (request.uri.path == '/v1/pair') {
-        final host = request.connectionInfo!.remoteAddress.address;
-        final attempts = _attempts[host];
-        final now = DateTime.now();
-        final count =
-            attempts != null && now.difference(attempts.$2).inMinutes < 1
-            ? attempts.$1
-            : 0;
-        if (!pairingOpen || count >= 5) {
-          await _reply(request, 403, {'error': '请在对方打开配对窗口，或一分钟后重试'});
+      if (request.uri.path == '/v1/hello' ||
+          request.uri.path == '/v1/connect') {
+        final address = request.connectionInfo!.remoteAddress;
+        if (!_isLanAddress(address)) {
+          await _reply(request, 403, {'error': '仅支持局域网直连'});
           return;
         }
-        // Reserve the attempt before reading a potentially delayed request body.
-        _attempts[host] = (count + 1, now);
-        final json = await _readJson(request);
-        if (!pairingOpen || json['code'] != pairingCode) {
-          await _reply(request, 403, {'error': '配对码错误'});
+        if (request.uri.path == '/v1/hello') {
+          await _reply(request, 200, {
+            'id': id,
+            'name': name,
+            'platform': Platform.operatingSystem,
+          });
           return;
+        }
+        final now = DateTime.now();
+        final json = await _readJson(request);
+        if (checkedId(json, 'targetId') != id) {
+          throw const FormatException('对方的设备身份不匹配');
         }
         final remoteId = checkedId(json, 'id');
-        if (remoteId == id) throw const FormatException('不能与自己配对');
-        final token = newId() + newId();
+        if (remoteId == id) throw const FormatException('不能连接本机');
+        final token = _tokenFor(remoteId);
         final peer = Peer.fromJson({
           ...json,
-          'host': host,
+          'host': address.address,
           'inboundToken': token,
         })..lastSeen = now;
+        final existing = peers[remoteId];
+        if (existing != null &&
+            (existing.fingerprint != peer.fingerprint ||
+                existing.token != peer.token)) {
+          throw const FormatException('设备身份已变化，无法覆盖已有连接');
+        }
         peers[peer.id] = peer;
         await save();
         notify();
@@ -423,7 +460,7 @@ class LanService {
           .where((p) => authorization == 'Bearer ${p.inboundToken}')
           .firstOrNull;
       if (peer == null) {
-        await _reply(request, 401, {'error': '请先配对设备'});
+        await _reply(request, 401, {'error': '请先连接设备'});
         return;
       }
       peer.lastSeen = DateTime.now();
