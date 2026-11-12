@@ -237,7 +237,7 @@ class LanService {
 
   HttpClient _client({String? pin}) {
     final client = HttpClient(context: SecurityContext(withTrustedRoots: false))
-      ..connectionTimeout = const Duration(seconds: 5)
+      ..connectionTimeout = const Duration(seconds: 30)
       ..findProxy = ((_) => 'DIRECT')
       ..badCertificateCallback = (cert, host, port) =>
           pin == null || sha256.convert(cert.der).toString() == pin;
@@ -268,6 +268,9 @@ class LanService {
     void Function(X509Certificate)? onCertificate,
   }) async {
     final client = _client(pin: pin);
+    if (path == '/v1/ping') {
+      client.connectionTimeout = const Duration(seconds: 5);
+    }
     try {
       final request = await client.postUrl(
         Uri(scheme: 'https', host: host, port: port, path: path),

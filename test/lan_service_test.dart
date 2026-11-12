@@ -175,6 +175,60 @@ void main() {
   });
 
   test(
+    'three attachments survive a connection taking over five seconds',
+    () async {
+      final peer = await connect();
+      final relay = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <Socket>[];
+      var first = true;
+      relay.listen((incoming) async {
+        sockets.add(incoming);
+        if (first) {
+          first = false;
+          await Future<void>.delayed(const Duration(seconds: 6));
+        }
+        final outgoing = await Socket.connect('127.0.0.1', b.port);
+        sockets.add(outgoing);
+        incoming.listen(
+          outgoing.add,
+          onDone: outgoing.destroy,
+          onError: (Object _) => outgoing.destroy(),
+        );
+        outgoing.listen(
+          incoming.add,
+          onDone: incoming.destroy,
+          onError: (Object _) => incoming.destroy(),
+        );
+      });
+      addTearDown(() async {
+        await relay.close();
+        for (final socket in sockets) {
+          socket.destroy();
+        }
+      });
+      peer.port = relay.port;
+      for (final (name, size) in [
+        ('图片.png', 14 * 1024),
+        ('大附件.bin', 4 * 1024 * 1024),
+        ('文本.txt', 123),
+      ]) {
+        final file = await File('${temporary.path}/$name')
+            .writeAsBytes(List.filled(size, 42));
+        await a.sendFile(peer, file);
+      }
+      expect(a.messages.map((m) => m.status), everyElement('sent'));
+      expect(b.messages, hasLength(3));
+      for (final message in b.messages) {
+        expect(await File(message.path!).length(), message.size);
+        expect(
+          (await sha256.bind(File(message.path!).openRead()).first).toString(),
+          message.digest,
+        );
+      }
+    },
+  );
+
+  test(
     'unauthenticated traffic and malformed documents are rejected',
     () async {
       final client = HttpClient()..badCertificateCallback = (_, _, _) => true;

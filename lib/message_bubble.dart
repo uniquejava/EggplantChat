@@ -115,17 +115,30 @@ class _MessageBubbleState extends State<MessageBubble> {
                               m.status != 'receiving')
                             Padding(
                               padding: const EdgeInsets.only(bottom: 10),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Image.file(
-                                  File(m.path!),
-                                  width: min(width - 32, 320),
-                                  height: 200,
-                                  fit: BoxFit.contain,
-                                  cacheWidth: 800,
-                                  errorBuilder: (_, _, _) => const SizedBox(
-                                    height: 64,
-                                    child: Center(child: Text('图片预览不可用')),
+                              child: ShadContextMenuRegion(
+                                items: [
+                                  ShadContextMenuItem(
+                                    enabled: !busy,
+                                    leading: const Icon(
+                                      LucideIcons.download,
+                                      size: 14,
+                                    ),
+                                    onPressed: _save,
+                                    child: const Text('另存为…'),
+                                  ),
+                                ],
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Image.file(
+                                    File(m.path!),
+                                    width: min(width - 32, 320),
+                                    height: 200,
+                                    fit: BoxFit.contain,
+                                    cacheWidth: 800,
+                                    errorBuilder: (_, _, _) => const SizedBox(
+                                      height: 64,
+                                      child: Center(child: Text('图片预览不可用')),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -173,7 +186,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                               padding: const EdgeInsets.only(top: 12),
                               child: ShadProgress(value: m.progress),
                             ),
-                          if (m.path != null && !busy)
+                          if (m.kind != 'image' && m.path != null && !busy)
                             Padding(
                               padding: const EdgeInsets.only(top: 10),
                               child: ShadButton.outline(

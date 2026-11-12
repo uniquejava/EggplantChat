@@ -36,6 +36,7 @@ class ChatComposer extends StatefulWidget {
 class _ChatComposerState extends State<ChatComposer> {
   late final quill.QuillController _controller;
   final _focus = FocusNode();
+  final _editorKey = GlobalKey<quill.QuillRawEditorState>();
   final _scroll = ScrollController();
   late final List<File> _files;
   bool _sending = false;
@@ -115,22 +116,26 @@ class _ChatComposerState extends State<ChatComposer> {
         _controller.document.toPlainText().trim().isEmpty && _files.isEmpty) {
       return;
     }
+    final delta = _controller.document.toDelta().toJson();
+    final files = List<File>.of(_files);
+    final selection = _controller.selection;
     setState(() => _sending = true);
     _controller.readOnly = true;
+    _files.clear();
+    _controller.document = quill.Document();
+    _controller.updateSelection(
+      const TextSelection.collapsed(offset: 0),
+      quill.ChangeSource.local,
+    );
+    _draftChanged();
     try {
-      await widget.onSend(
-        _controller.document.toDelta().toJson(),
-        List.of(_files),
-      );
-      if (!mounted) return;
-      _files.clear();
-      _controller.document = quill.Document();
-      _controller.updateSelection(
-        const TextSelection.collapsed(offset: 0),
-        quill.ChangeSource.local,
-      );
-      _draftChanged();
+      await widget.onSend(delta, files);
     } on Object catch (error) {
+      if (!mounted) return;
+      _files.addAll(files);
+      _controller.document = quill.Document.fromJson(delta);
+      _controller.updateSelection(selection, quill.ChangeSource.local);
+      _draftChanged();
       widget.onError('发送失败：$error');
     } finally {
       if (mounted) {
@@ -202,123 +207,148 @@ class _ChatComposerState extends State<ChatComposer> {
         }
         if (mounted) _draftChanged();
       },
-      child: CallbackShortcuts(
-        bindings: {
-          SingleActivator(
-            LogicalKeyboardKey.enter,
-            meta: Platform.isMacOS,
-            control: !Platform.isMacOS,
-          ): _send,
-        },
-        child: Container(
-          decoration: BoxDecoration(
-            color: _dragging ? colors.muted : colors.background,
-            border: Border(top: BorderSide(color: colors.border)),
-          ),
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Wrap(
-                crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 2,
-                children: [
-                  _tool('发送图片', LucideIcons.imagePlus, () => _pick(true)),
-                  _tool('添加附件', LucideIcons.paperclip, () => _pick(false)),
-                  const SizedBox(width: 10),
-                  _format('加粗', LucideIcons.bold, quill.Attribute.bold),
-                  _format('斜体', LucideIcons.italic, quill.Attribute.italic),
-                  _format(
-                    '下划线',
-                    LucideIcons.underline,
-                    quill.Attribute.underline,
-                  ),
-                  _format('无序列表', LucideIcons.list, quill.Attribute.ul),
-                  _format('有序列表', LucideIcons.listOrdered, quill.Attribute.ol),
-                  _format('引用', LucideIcons.quote, quill.Attribute.blockQuote),
-                  _format('代码块', LucideIcons.code, quill.Attribute.codeBlock),
-                  _tool(
-                    '从剪贴板粘贴',
-                    LucideIcons.clipboardPaste,
-                    () => _controller.clipboardPaste(),
-                  ),
-                ],
-              ),
-              if (_files.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: _files
-                        .map(
-                          (file) => ShadButton.secondary(
-                            size: ShadButtonSize.sm,
-                            enabled: !_sending,
-                            leading: const Icon(
-                              LucideIcons.paperclip,
-                              size: 14,
-                            ),
-                            trailing: const Icon(LucideIcons.x, size: 12),
-                            onPressed: () {
-                              _files.remove(file);
-                              _draftChanged();
-                            },
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 170),
-                              child: Text(
-                                file.uri.pathSegments.last,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: _dragging ? colors.muted : colors.background,
+          border: Border(top: BorderSide(color: colors.border)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 2,
+              children: [
+                _tool('发送图片', LucideIcons.imagePlus, () => _pick(true)),
+                _tool('添加附件', LucideIcons.paperclip, () => _pick(false)),
+                const SizedBox(width: 10),
+                _format('加粗', LucideIcons.bold, quill.Attribute.bold),
+                _format('斜体', LucideIcons.italic, quill.Attribute.italic),
+                _format(
+                  '下划线',
+                  LucideIcons.underline,
+                  quill.Attribute.underline,
+                ),
+                _format('无序列表', LucideIcons.list, quill.Attribute.ul),
+                _format('有序列表', LucideIcons.listOrdered, quill.Attribute.ol),
+                _format('引用', LucideIcons.quote, quill.Attribute.blockQuote),
+                _format('代码块', LucideIcons.code, quill.Attribute.codeBlock),
+                _tool(
+                  '从剪贴板粘贴',
+                  LucideIcons.clipboardPaste,
+                  () => _controller.clipboardPaste(),
+                ),
+              ],
+            ),
+            if (_files.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: _files
+                      .map(
+                        (file) => ShadButton.secondary(
+                          size: ShadButtonSize.sm,
+                          enabled: !_sending,
+                          leading: const Icon(LucideIcons.paperclip, size: 14),
+                          trailing: const Icon(LucideIcons.x, size: 12),
+                          onPressed: () {
+                            _files.remove(file);
+                            _draftChanged();
+                          },
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 170),
+                            child: Text(
+                              file.uri.pathSegments.last,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              SizedBox(
-                height: 120,
-                child: quill.QuillEditor(
-                  controller: _controller,
-                  focusNode: _focus,
-                  scrollController: _scroll,
-                  config: quill.QuillEditorConfig(
-                    placeholder: _dragging ? '松开以添加附件' : '输入消息，或粘贴带格式的文字…',
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    customStyles: AppTheme.editorStyles(colors.foreground),
-                    onLaunchUrl: (_) async {},
-                  ),
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${Platform.isMacOS ? '⌘' : 'Ctrl'} + Enter 发送 · Enter 换行',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: colors.mutedForeground,
-                      ),
-                    ),
-                  ),
-                  ShadButton(
-                    size: ShadButtonSize.sm,
-                    enabled:
-                        !_sending &&
-                        (_controller.document.toPlainText().trim().isNotEmpty ||
-                            _files.isNotEmpty),
-                    onPressed: _send,
-                    leading: Icon(
-                      _sending ? LucideIcons.loaderCircle : LucideIcons.send,
-                      size: 15,
-                    ),
-                    child: Text(_sending ? '发送中' : '发送'),
-                  ),
-                ],
+            SizedBox(
+              height: 120,
+              child: quill.QuillEditor(
+                controller: _controller,
+                focusNode: _focus,
+                scrollController: _scroll,
+                config: quill.QuillEditorConfig(
+                  editorKey: _editorKey,
+                  onKeyPressed: (event, _) {
+                    if (event.logicalKey != LogicalKeyboardKey.enter &&
+                        event.logicalKey != LogicalKeyboardKey.numpadEnter) {
+                      return null;
+                    }
+                    final composing = _editorKey
+                        .currentState
+                        ?.currentTextEditingValue
+                        ?.composing;
+                    if (composing != null && !composing.isCollapsed) {
+                      return KeyEventResult.skipRemainingHandlers;
+                    }
+                    if (HardwareKeyboard.instance.isAltPressed ||
+                        HardwareKeyboard.instance.isControlPressed ||
+                        HardwareKeyboard.instance.isMetaPressed) {
+                      return null;
+                    }
+                    if (event is KeyDownEvent) {
+                      if (HardwareKeyboard.instance.isShiftPressed) {
+                        if (!_sending) {
+                          final selection = _controller.selection;
+                          _controller.replaceText(
+                            selection.start,
+                            selection.end - selection.start,
+                            '\n',
+                            TextSelection.collapsed(
+                              offset: selection.start + 1,
+                            ),
+                          );
+                        }
+                      } else {
+                        _send();
+                      }
+                    }
+                    return KeyEventResult.handled;
+                  },
+                  placeholder: _dragging ? '松开以添加附件' : '输入消息，或粘贴带格式的文字…',
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  customStyles: AppTheme.editorStyles(colors.foreground),
+                  onLaunchUrl: (_) async {},
+                ),
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Enter 发送 · Shift + Enter 换行',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.mutedForeground,
+                    ),
+                  ),
+                ),
+                ShadButton(
+                  size: ShadButtonSize.sm,
+                  enabled:
+                      !_sending &&
+                      (_controller.document.toPlainText().trim().isNotEmpty ||
+                          _files.isNotEmpty),
+                  onPressed: _send,
+                  leading: Icon(
+                    _sending ? LucideIcons.loaderCircle : LucideIcons.send,
+                    size: 15,
+                  ),
+                  child: Text(_sending ? '发送中' : '发送'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
