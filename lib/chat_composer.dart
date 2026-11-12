@@ -146,39 +146,19 @@ class _ChatComposerState extends State<ChatComposer> {
     }
   }
 
-  Widget _tool(
-    String label,
-    IconData icon,
-    VoidCallback action, {
-    bool active = false,
-  }) => ShadTooltip(
+  Widget _tool(String label, IconData icon, VoidCallback action) => ShadTooltip(
     builder: (_) => Text(label),
     child: Semantics(
       label: label,
       child: ShadIconButton.ghost(
-        icon: Icon(icon, size: 17),
+        icon: Icon(icon, size: 18),
         width: 36,
         height: 36,
-        backgroundColor: active
-            ? ShadTheme.of(context).colorScheme.muted
-            : null,
         enabled: !_sending,
         onPressed: action,
       ),
     ),
   );
-
-  Widget _format(String label, IconData icon, quill.Attribute attribute) {
-    final selected =
-        _controller.getSelectionStyle().attributes[attribute.key]?.value ==
-        attribute.value;
-    return _tool(label, icon, () {
-      _controller.formatSelection(
-        selected ? quill.Attribute.clone(attribute, null) : attribute,
-      );
-      _focus.requestFocus();
-    }, active: selected);
-  }
 
   @override
   void dispose() {
@@ -212,35 +192,10 @@ class _ChatComposerState extends State<ChatComposer> {
           color: _dragging ? colors.muted : colors.background,
           border: Border(top: BorderSide(color: colors.border)),
         ),
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 2,
-              children: [
-                _tool('发送图片', LucideIcons.imagePlus, () => _pick(true)),
-                _tool('添加附件', LucideIcons.paperclip, () => _pick(false)),
-                const SizedBox(width: 10),
-                _format('加粗', LucideIcons.bold, quill.Attribute.bold),
-                _format('斜体', LucideIcons.italic, quill.Attribute.italic),
-                _format(
-                  '下划线',
-                  LucideIcons.underline,
-                  quill.Attribute.underline,
-                ),
-                _format('无序列表', LucideIcons.list, quill.Attribute.ul),
-                _format('有序列表', LucideIcons.listOrdered, quill.Attribute.ol),
-                _format('引用', LucideIcons.quote, quill.Attribute.blockQuote),
-                _format('代码块', LucideIcons.code, quill.Attribute.codeBlock),
-                _tool(
-                  '从剪贴板粘贴',
-                  LucideIcons.clipboardPaste,
-                  () => _controller.clipboardPaste(),
-                ),
-              ],
-            ),
             if (_files.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -271,7 +226,7 @@ class _ChatComposerState extends State<ChatComposer> {
                 ),
               ),
             SizedBox(
-              height: 120,
+              height: AppTheme.composerHeight,
               child: quill.QuillEditor(
                 controller: _controller,
                 focusNode: _focus,
@@ -314,9 +269,13 @@ class _ChatComposerState extends State<ChatComposer> {
                     }
                     return KeyEventResult.handled;
                   },
-                  placeholder: _dragging ? '松开以添加附件' : '输入消息，或粘贴带格式的文字…',
+                  placeholder: _dragging ? '松开以添加附件' : '输入消息…',
                   padding: const EdgeInsets.symmetric(vertical: 10),
-                  customStyles: AppTheme.editorStyles(colors.foreground),
+                  textSelectionThemeData: AppTheme.selection,
+                  customStyles: AppTheme.editorStyles(
+                    colors.foreground,
+                    colors.mutedForeground,
+                  ),
                   onLaunchUrl: (_) async {},
                 ),
               ),
@@ -324,6 +283,9 @@ class _ChatComposerState extends State<ChatComposer> {
             const SizedBox(height: 6),
             Row(
               children: [
+                _tool('发送图片', LucideIcons.imagePlus, () => _pick(true)),
+                _tool('添加附件', LucideIcons.paperclip, () => _pick(false)),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     'Enter 发送 · Shift + Enter 换行',

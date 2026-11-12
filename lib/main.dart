@@ -13,11 +13,15 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   await windowManager.waitUntilReadyToShow(
-    const WindowOptions(
-      size: Size(1180, 800),
-      minimumSize: Size(820, 620),
+    WindowOptions(
+      size: const Size(1180, 800),
+      minimumSize: const Size(820, 620),
       center: true,
       title: 'EggplantChat',
+      titleBarStyle: Platform.isMacOS
+          ? TitleBarStyle.hidden
+          : TitleBarStyle.normal,
+      windowButtonVisibility: true,
     ),
     () async {
       await windowManager.show();

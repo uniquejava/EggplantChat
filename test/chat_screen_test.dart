@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:window_manager/window_manager.dart';
 
 class RecordingService extends LanService {
   RecordingService() : super(Directory.systemTemp, deviceName: 'Mac A') {
@@ -77,6 +78,90 @@ void main() {
     await closing;
   }
 
+  testWidgets(
+    'dates are centered groups, including midnight, without per-message times',
+    (tester) async {
+      final service = RecordingService();
+      final peer = Peer(
+        id: newId(),
+        name: '对方',
+        host: '192.168.1.2',
+        port: lanPort,
+        platform: 'windows',
+      );
+      service.peers[peer.id] = peer;
+      final now = DateTime.now();
+      final yesterday = DateTime(now.year, now.month, now.day - 1);
+      final times = [
+        DateTime(yesterday.year, yesterday.month, yesterday.day, 23, 40),
+        DateTime(yesterday.year, yesterday.month, yesterday.day, 23, 42),
+        DateTime(yesterday.year, yesterday.month, yesterday.day, 23, 58),
+        DateTime(now.year, now.month, now.day, 0, 1),
+      ];
+      final oldDate = '${yesterday.month}月${yesterday.day}日';
+      for (var i = 0; i < times.length; i++) {
+        service.messages.add(
+          ChatMessage(
+            id: newId(),
+            peerId: peer.id,
+            outgoing: i.isOdd,
+            kind: 'text',
+            time: times[i],
+            delta: [
+              {'insert': '消息 $i\n'},
+            ],
+          ),
+        );
+      }
+      await showScreen(tester, service);
+      for (final label in ['$oldDate  23:40', '$oldDate  23:58', '00:01']) {
+        final date = find.text(label);
+        expect(date, findsOneWidget);
+        expect(tester.getCenter(date).dx, 762);
+      }
+      expect(find.text('$oldDate  23:42'), findsNothing);
+      expect(find.text('${now.month}月${now.day}日  00:01'), findsNothing);
+      for (final time in ['23:40', '23:42', '23:58']) {
+        expect(find.text(time), findsNothing);
+      }
+      expect(tester.takeException(), isNull);
+      await closeScreen(tester, service);
+    },
+  );
+
+  for (final platform in ['macos', 'windows', 'linux', 'unknown']) {
+    testWidgets('device avatar uses $platform identity in list and header', (
+      tester,
+    ) async {
+      final service = RecordingService();
+      final peer = Peer(
+        id: newId(),
+        name: '设备',
+        host: '192.168.1.2',
+        port: lanPort,
+        platform: platform,
+      );
+      service.peers[peer.id] = peer;
+      await showScreen(tester, service);
+      if (platform == 'unknown') {
+        expect(find.byIcon(LucideIcons.monitor), findsNWidgets(2));
+      } else {
+        final icons = tester.widgetList<SvgPicture>(find.byType(SvgPicture));
+        expect(
+          icons.where(
+            (icon) =>
+                icon.bytesLoader is SvgAssetLoader &&
+                (icon.bytesLoader as SvgAssetLoader).assetName ==
+                    'assets/platforms/$platform.svg',
+          ),
+          hasLength(2),
+        );
+      }
+      expect(tester.takeException(), isNull);
+      await closeScreen(tester, service);
+    });
+  }
+
   testWidgets('clicking a nearby device connects without a dialog', (
     tester,
   ) async {
@@ -93,8 +178,12 @@ void main() {
     await tester.tap(find.text('Mac Studio'));
     await tester.pump(const Duration(milliseconds: 250));
     expect(service.connections, [('192.168.3.11', lanPort, nearby.id)]);
+    expect(
+      find.byType(DragToMoveArea),
+      findsNWidgets(Platform.isMacOS ? 3 : 2),
+    );
     expect(find.byType(ShadDialog), findsNothing);
-    expect(find.text('局域网直连'), findsOneWidget);
+    expect(find.text('Mac Studio'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
     await closeScreen(tester, service);
   });
@@ -117,7 +206,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(service.connections, [('192.168.3.11', lanPort, null)]);
     expect(find.byType(ShadDialog), findsNothing);
-    expect(find.text('局域网直连'), findsOneWidget);
+    expect(find.text('Mac Studio'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
     await closeScreen(tester, service);
   });

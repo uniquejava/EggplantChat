@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'app_theme.dart';
 import 'chat_composer.dart';
@@ -298,6 +299,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _avatar(Peer peer, {double size = 42}) {
     final colors = ShadTheme.of(context).colorScheme;
+    final platform = switch (peer.platform) {
+      'macos' => 'macos',
+      'windows' => 'windows',
+      'linux' => 'linux',
+      _ => null,
+    };
     return Container(
       width: size,
       height: size,
@@ -306,10 +313,23 @@ class _ChatScreenState extends State<ChatScreen> {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: colors.border),
       ),
-      child: Icon(
-        peer.platform == 'macos' ? LucideIcons.laptop : LucideIcons.monitor,
-        size: size * .46,
-        color: colors.foreground,
+      child: Center(
+        child: platform == null
+            ? Icon(LucideIcons.monitor, size: size * .46)
+            : SvgPicture.asset(
+                'assets/platforms/$platform.svg',
+                width: size * .5,
+                height: size * .5,
+                semanticsLabel: switch (platform) {
+                  'macos' => 'macOS',
+                  'windows' => 'Windows',
+                  _ => 'Linux',
+                },
+                colorFilter: ColorFilter.mode(
+                  colors.foreground,
+                  BlendMode.srcIn,
+                ),
+              ),
       ),
     );
   }
@@ -321,6 +341,13 @@ class _ChatScreenState extends State<ChatScreen> {
       color: colors.muted,
       child: Column(
         children: [
+          if (Platform.isMacOS)
+            const DragToMoveArea(
+              child: SizedBox(
+                height: AppTheme.windowControlsHeight,
+                width: double.infinity,
+              ),
+            ),
           const SizedBox(height: 20),
           Container(
             width: 36,
@@ -397,18 +424,23 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 14, 12),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '消息',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          DragToMoveArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 14, 12),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '消息',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                ),
-                _icon('通过 IP 连接', LucideIcons.plus, _connect),
-              ],
+                  _icon('通过 IP 连接', LucideIcons.plus, _connect),
+                ],
+              ),
             ),
           ),
           Padding(
@@ -443,17 +475,17 @@ class _ChatScreenState extends State<ChatScreen> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
                     child: ShadButton.ghost(
-                      height: 80,
+                      height: 72,
                       expands: true,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
                       backgroundColor: _selected == peer.id
                           ? colors.muted
                           : null,
                       onPressed: () => _select(peer.id),
                       child: Row(
                         children: [
-                          _avatar(peer),
-                          const SizedBox(width: 12),
+                          _avatar(peer, size: 38),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -464,6 +496,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                     Expanded(
                                       child: Text(
                                         peer.name,
+                                        textAlign: TextAlign.start,
+                                        maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
                                           fontWeight: FontWeight.w600,
@@ -484,6 +518,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                           .lastOrNull
                                           ?.preview ??
                                       (peer.online ? '已连接，可以发送消息' : '等待设备上线'),
+                                  textAlign: TextAlign.start,
                                   overflow: TextOverflow.ellipsis,
                                   maxLines: 1,
                                   style: TextStyle(
@@ -545,6 +580,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             children: [
                               Text(
                                 peer.name,
+                                textAlign: TextAlign.start,
+                                maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(fontSize: 12),
                               ),
@@ -552,6 +589,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 _connectingHost == peer.host
                                     ? '正在连接…'
                                     : peer.host,
+                                textAlign: TextAlign.start,
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: colors.mutedForeground,
@@ -687,43 +725,44 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
     return Column(
       children: [
-        Container(
-          height: 78,
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          decoration: BoxDecoration(
-            color: colors.background,
-            border: Border(bottom: BorderSide(color: colors.border)),
-          ),
-          child: Row(
-            children: [
-              _avatar(peer, size: 38),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      peer.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+        DragToMoveArea(
+          child: Container(
+            height: 78,
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            decoration: BoxDecoration(
+              color: colors.background,
+              border: Border(bottom: BorderSide(color: colors.border)),
+            ),
+            child: Row(
+              children: [
+                _avatar(peer, size: 38),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        peer.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${peer.online ? '在线' : '离线'} · ${peer.host}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: colors.mutedForeground,
+                      const SizedBox(height: 4),
+                      Text(
+                        '${peer.online ? '在线' : '离线'} · ${peer.host}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.mutedForeground,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              ShadBadge.outline(child: const Text('局域网直连')),
-            ],
+              ],
+            ),
           ),
         ),
         Expanded(
@@ -747,19 +786,27 @@ class _ChatScreenState extends State<ChatScreen> {
                   itemCount: messages.length,
                   itemBuilder: (context, index) {
                     final message = messages[index];
+                    final time = message.time.toLocal();
+                    final clock =
+                        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
                     final previous = index + 1 < messages.length
                         ? messages[index + 1]
                         : null;
                     return Column(
                       children: [
                         if (previous == null ||
+                            !DateUtils.isSameDay(
+                              time,
+                              previous.time.toLocal(),
+                            ) ||
                             message.time.difference(previous.time).inMinutes >=
                                 10)
                           Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            padding: const EdgeInsets.symmetric(vertical: 8),
                             child: Text(
-                              '${message.time.month}月${message.time.day}日  '
-                              '${message.time.hour.toString().padLeft(2, '0')}:${message.time.minute.toString().padLeft(2, '0')}',
+                              DateUtils.isSameDay(time, DateTime.now())
+                                  ? clock
+                                  : '${time.month}月${time.day}日  $clock',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: colors.mutedForeground,
@@ -769,6 +816,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         MessageBubble(
                           key: ValueKey('${message.outgoing}/${message.id}'),
                           message: message,
+                          senderName: message.outgoing
+                              ? '我 · ${service.name}'
+                              : peer.name,
                           onRetry: () async {
                             try {
                               await service.retry(message);
