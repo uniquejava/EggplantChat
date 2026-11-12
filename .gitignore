@@ -46,3 +46,23 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local secrets and signing credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+
+# Local chat data
+state.json
+state.json.tmp
+/received/
+/sent/
+/clipboard/
