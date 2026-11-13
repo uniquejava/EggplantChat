@@ -11,12 +11,33 @@ import 'app_theme.dart';
 import 'models.dart';
 import 'rich_clipboard.dart';
 
-IconData _fileIcon(String? name) {
+Widget _fileIcon(String? name, BuildContext context) {
+  final theme = ShadTheme.of(context);
   final extension = name != null && name.contains('.')
       ? name.split('.').last.toLowerCase()
       : '';
-  return switch (extension) {
-    'pdf' || 'doc' || 'docx' || 'txt' || 'rtf' || 'odt' => LucideIcons.fileText,
+  if (extension == 'pdf') {
+    final color = theme.brightness == Brightness.dark
+        ? AppTheme.pdfIconDark
+        : AppTheme.pdfIconLight;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(LucideIcons.file, size: 24, color: color),
+        Text(
+          'PDF',
+          style: TextStyle(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            height: 1.2,
+          ),
+        ),
+      ],
+    );
+  }
+  final icon = switch (extension) {
+    'doc' || 'docx' || 'txt' || 'rtf' || 'odt' => LucideIcons.fileText,
     'xls' || 'xlsx' || 'csv' || 'ods' => LucideIcons.fileSpreadsheet,
     'ppt' || 'pptx' || 'odp' => LucideIcons.fileChartColumn,
     'zip' || 'rar' || '7z' || 'tar' || 'gz' => LucideIcons.fileArchive,
@@ -52,6 +73,7 @@ IconData _fileIcon(String? name) {
     'xml' => LucideIcons.fileCode,
     _ => LucideIcons.file,
   };
+  return Icon(icon, size: 32, color: theme.colorScheme.mutedForeground);
 }
 
 class MessageBubble extends StatefulWidget {
@@ -427,11 +449,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                                                         const SizedBox(
                                                           width: 16,
                                                         ),
-                                                        Icon(
-                                                          _fileIcon(m.name),
-                                                          size: 32,
-                                                          color: colors
-                                                              .mutedForeground,
+                                                        _fileIcon(
+                                                          m.name,
+                                                          context,
                                                         ),
                                                       ],
                                                     ),

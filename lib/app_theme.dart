@@ -6,6 +6,8 @@ abstract final class AppTheme {
   static const messageRadius = BorderRadius.all(Radius.circular(8));
   static const outgoingBubbleLight = Color(0xFFB2EF9B);
   static const outgoingBubbleDark = Color(0xFF294A30);
+  static const pdfIconLight = Color(0xFFB91C1C);
+  static const pdfIconDark = Color(0xFFF87171);
   static const composerHeight = 104.0;
   static const windowControlsHeight = 32.0;
   static const railWidth = 64.0;

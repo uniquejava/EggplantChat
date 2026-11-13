@@ -161,7 +161,10 @@ void main() {
   });
 
   for (final entry in {
-    'report.pdf': LucideIcons.fileText,
+    'report.pdf': LucideIcons.file,
+    'REPORT.PDF': LucideIcons.file,
+    'notes.txt': LucideIcons.fileText,
+    'letter.docx': LucideIcons.fileText,
     'table.XLSX': LucideIcons.fileSpreadsheet,
     'backup.zip': LucideIcons.fileArchive,
     'README': LucideIcons.file,
@@ -191,7 +194,12 @@ void main() {
           ),
         ),
       );
-      expect(find.text('PDF'), findsNothing);
+      expect(
+        find.text('PDF'),
+        entry.key.toLowerCase().endsWith('.pdf')
+            ? findsOneWidget
+            : findsNothing,
+      );
       expect(find.byIcon(entry.value), findsOneWidget);
       expect(find.text('另存为'), findsNothing);
       await tester.tap(
