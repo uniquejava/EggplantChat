@@ -58,6 +58,8 @@ class LanService {
   HttpServer? _server;
   RawDatagramSocket? _udp;
   Timer? _timer;
+  Timer? _discoveryTimer;
+  bool get discovering => _discoveryTimer?.isActive ?? false;
   Future<void> _writes = Future.value();
   bool _closed = false;
   int get port => _server!.port;
@@ -149,6 +151,7 @@ class LanService {
       } on SocketException {
         warning = '自动发现不可用，请通过 IP 连接';
       }
+      refreshDevices();
       _tick();
       _timer = Timer.periodic(const Duration(seconds: 6), (_) => _tick());
     }
@@ -187,6 +190,32 @@ class LanService {
 
   void _tick() {
     unawaited(_refreshAddresses().catchError((Object _) {}));
+    for (final peer in peers.values.toList()) {
+      unawaited(_probe(peer, nearby[peer.id] ?? peer));
+    }
+    notify();
+  }
+
+  void refreshDevices() {
+    if (_closed || discovering) return;
+    if (_udp == null) {
+      warning = '自动发现不可用，请通过 IP 连接';
+      notify();
+      return;
+    }
+    nearby.clear();
+    _discoveryTimer = Timer(const Duration(seconds: 3), notify);
+    for (final address in ['239.255.42.99', '255.255.255.255']) {
+      _announce(InternetAddress(address), discoveryPort, request: true);
+    }
+    notify();
+  }
+
+  void _announce(
+    InternetAddress address,
+    int targetPort, {
+    bool request = false,
+  }) {
     final bytes = utf8.encode(
       jsonEncode({
         'app': 'eggplant-chat',
@@ -195,19 +224,15 @@ class LanService {
         'name': name,
         'port': port,
         'platform': Platform.operatingSystem,
+        'discover': request,
       }),
     );
-    for (final address in ['239.255.42.99', '255.255.255.255']) {
-      try {
-        _udp?.send(bytes, InternetAddress(address), discoveryPort);
-      } on SocketException {
-        /* Manual IP connection remains available. */
-      }
+    try {
+      _udp?.send(bytes, address, targetPort);
+    } on SocketException {
+      warning = '自动发现暂不可用，请通过 IP 连接';
+      notify();
     }
-    for (final peer in peers.values.toList()) {
-      unawaited(_probe(peer, nearby[peer.id] ?? peer));
-    }
-    notify();
   }
 
   void _receiveDiscovery() {
@@ -227,6 +252,10 @@ class LanService {
           port: checkedPort(json['port']),
           platform: requiredString(json, 'platform', max: 32),
         )..lastSeen = DateTime.now();
+        if (json['discover'] == true) {
+          _announce(datagram.address, datagram.port);
+        }
+        if (!discovering && !peers.containsKey(remoteId)) continue;
         nearby[remoteId] = peer;
         notify();
       } on Object {
@@ -738,9 +767,27 @@ class LanService {
     }
   }
 
+  Future<void> deleteMessage(ChatMessage message) async {
+    if (['sending', 'receiving'].contains(message.status)) {
+      throw StateError('传输完成后才能删除');
+    }
+    final index = messages.indexOf(message);
+    if (index < 0) return;
+    messages.removeAt(index);
+    try {
+      await save();
+    } on Object {
+      messages.insert(index.clamp(0, messages.length), message);
+      notify();
+      rethrow;
+    }
+    notify();
+  }
+
   Future<void> close() async {
     _closed = true;
     _timer?.cancel();
+    _discoveryTimer?.cancel();
     _udp?.close();
     for (final client in _clients.toList()) {
       client.close(force: true);

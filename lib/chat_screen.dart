@@ -438,7 +438,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                   ),
-                  _icon('通过 IP 连接', LucideIcons.plus, _connect),
+                  _icon('刷新设备', LucideIcons.refreshCw, service.refreshDevices),
                 ],
               ),
             ),
@@ -534,34 +534,35 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                   ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 24, 8, 10),
-                  child: Row(
-                    children: [
-                      Icon(
-                        LucideIcons.wifi,
-                        size: 13,
-                        color: colors.mutedForeground,
-                      ),
-                      const SizedBox(width: 7),
-                      Text(
-                        '附近设备',
-                        style: TextStyle(
-                          fontSize: 11,
+                if (nearby.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 24, 8, 10),
+                    child: Row(
+                      children: [
+                        Icon(
+                          LucideIcons.wifi,
+                          size: 13,
                           color: colors.mutedForeground,
                         ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        '${nearby.length}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: colors.mutedForeground,
+                        const SizedBox(width: 7),
+                        Text(
+                          '附近设备',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colors.mutedForeground,
+                          ),
                         ),
-                      ),
-                    ],
+                        const Spacer(),
+                        Text(
+                          '${nearby.length}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colors.mutedForeground,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 for (final peer in nearby)
                   ShadButton.ghost(
                     height: 64,
@@ -606,7 +607,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ],
                     ),
                   ),
-                if (nearby.isEmpty)
+                if (service.discovering)
                   Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
@@ -826,6 +827,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               _error('$error');
                             }
                           },
+                          onDelete: () => service.deleteMessage(message),
                           onError: _error,
                         ),
                       ],

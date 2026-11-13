@@ -3,12 +3,56 @@ import 'dart:math';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import 'app_theme.dart';
 import 'models.dart';
 import 'rich_clipboard.dart';
+
+IconData _fileIcon(String? name) {
+  final extension = name != null && name.contains('.')
+      ? name.split('.').last.toLowerCase()
+      : '';
+  return switch (extension) {
+    'pdf' || 'doc' || 'docx' || 'txt' || 'rtf' || 'odt' => LucideIcons.fileText,
+    'xls' || 'xlsx' || 'csv' || 'ods' => LucideIcons.fileSpreadsheet,
+    'ppt' || 'pptx' || 'odp' => LucideIcons.fileChartColumn,
+    'zip' || 'rar' || '7z' || 'tar' || 'gz' => LucideIcons.fileArchive,
+    'mp3' ||
+    'wav' ||
+    'flac' ||
+    'aac' ||
+    'm4a' ||
+    'ogg' => LucideIcons.fileAudio,
+    'mp4' || 'mov' || 'mkv' || 'avi' || 'webm' => LucideIcons.fileVideo,
+    'png' ||
+    'jpg' ||
+    'jpeg' ||
+    'gif' ||
+    'webp' ||
+    'svg' ||
+    'heic' => LucideIcons.fileImage,
+    'dart' ||
+    'js' ||
+    'ts' ||
+    'tsx' ||
+    'json' ||
+    'html' ||
+    'css' ||
+    'py' ||
+    'java' ||
+    'swift' ||
+    'cpp' ||
+    'c' ||
+    'sh' ||
+    'yaml' ||
+    'yml' ||
+    'xml' => LucideIcons.fileCode,
+    _ => LucideIcons.file,
+  };
+}
 
 class MessageBubble extends StatefulWidget {
   const MessageBubble({
@@ -17,10 +61,12 @@ class MessageBubble extends StatefulWidget {
     required this.senderName,
     required this.onRetry,
     required this.onError,
+    required this.onDelete,
   });
   final ChatMessage message;
   final String senderName;
   final VoidCallback onRetry;
+  final Future<void> Function() onDelete;
   final void Function(String) onError;
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -29,9 +75,9 @@ class MessageBubble extends StatefulWidget {
 class _MessageBubbleState extends State<MessageBubble> {
   quill.QuillController? _controller;
   final _focus = FocusNode();
+  final _contextMenu = ShadContextMenuController();
+  Offset _menuPosition = Offset.zero;
   final _scroll = ScrollController();
-  bool _hovered = false;
-  bool _focused = false;
 
   @override
   void initState() {
@@ -42,6 +88,59 @@ class _MessageBubbleState extends State<MessageBubble> {
         selection: const TextSelection.collapsed(offset: 0),
       )..readOnly = true;
     }
+  }
+
+  List<ShadContextMenuItem> _menu() {
+    final m = widget.message;
+    final busy = ['sending', 'receiving'].contains(m.status);
+    return [
+      ShadContextMenuItem(
+        enabled: m.kind == 'text' || (m.path != null && !busy),
+        onPressed: () async {
+          try {
+            await copyMessage(m);
+          } on Object catch (error) {
+            widget.onError('复制失败：$error');
+          }
+        },
+        child: const Text('Copy'),
+      ),
+      if (m.kind != 'text')
+        ShadContextMenuItem(
+          enabled: m.path != null && !busy,
+          onPressed: _save,
+          child: const Text('Save as…'),
+        ),
+      ShadContextMenuItem(
+        enabled: !busy,
+        onPressed: () async {
+          final confirmed = await showShadDialog<bool>(
+            context: context,
+            barrierColor: const Color(0x33000000),
+            builder: (dialogContext) => ShadDialog(
+              title: const Text('删除这条消息？'),
+              actions: [
+                ShadButton.outline(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('取消'),
+                ),
+                ShadButton.destructive(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('删除'),
+                ),
+              ],
+            ),
+          );
+          if (confirmed != true || !mounted) return;
+          try {
+            await widget.onDelete();
+          } on Object catch (error) {
+            widget.onError('删除失败：$error');
+          }
+        },
+        child: const Text('Delete'),
+      ),
+    ];
   }
 
   Future<void> _save() async {
@@ -60,9 +159,39 @@ class _MessageBubbleState extends State<MessageBubble> {
     }
   }
 
+  Future<void> _viewImage() => showShadDialog<void>(
+    context: context,
+    builder: (dialogContext) => ShadDialog(
+      title: Text(widget.message.name ?? '图片'),
+      actions: [
+        ShadButton.outline(onPressed: _save, child: const Text('另存为')),
+        ShadButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+      child: SizedBox(
+        width: MediaQuery.sizeOf(dialogContext).width * .8,
+        height: MediaQuery.sizeOf(dialogContext).height * .7,
+        child: InteractiveViewer(
+          minScale: 1,
+          maxScale: 12,
+          child: Center(
+            child: Image.file(
+              File(widget.message.path!),
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) => const Text('图片预览不可用'),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   @override
   void dispose() {
     _controller?.dispose();
+    _contextMenu.dispose();
     _focus.dispose();
     _scroll.dispose();
     super.dispose();
@@ -77,16 +206,24 @@ class _MessageBubbleState extends State<MessageBubble> {
               ? AppTheme.outgoingBubbleDark
               : AppTheme.outgoingBubbleLight)
         : colors.muted;
+    final hasImage =
+        m.kind == 'image' && m.path != null && m.status != 'receiving';
     final busy = ['sending', 'receiving'].contains(m.status);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = min(560.0, constraints.maxWidth * .72);
-        return Focus(
-          onFocusChange: (focused) => setState(() => _focused = focused),
-          child: MouseRegion(
-            onEnter: (_) => setState(() => _hovered = true),
-            onExit: (_) => setState(() => _hovered = false),
-            child: Padding(
+    return ShadContextMenu(
+      controller: _contextMenu,
+      anchor: ShadGlobalAnchor(_menuPosition),
+      items: _menu(),
+      child: Listener(
+        onPointerDown: (event) {
+          if (m.kind == 'text' && event.buttons == kSecondaryMouseButton) {
+            setState(() => _menuPosition = event.position);
+            _contextMenu.show();
+          }
+        },
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = min(560.0, constraints.maxWidth * .72);
+            return Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
                 textDirection: m.outgoing
@@ -137,26 +274,31 @@ class _MessageBubbleState extends State<MessageBubble> {
                             child: Stack(
                               clipBehavior: Clip.none,
                               children: [
-                                Positioned(
-                                  left: m.outgoing ? null : -4,
-                                  right: m.outgoing ? -4 : null,
-                                  top: 14,
-                                  child: Transform.rotate(
-                                    angle: pi / 4,
-                                    child: Container(
-                                      width: 8,
-                                      height: 8,
-                                      color: bubbleColor,
+                                if (m.kind == 'text')
+                                  Positioned(
+                                    left: m.outgoing ? null : -4,
+                                    right: m.outgoing ? -4 : null,
+                                    top: 14,
+                                    child: Transform.rotate(
+                                      angle: pi / 4,
+                                      child: Container(
+                                        width: 8,
+                                        height: 8,
+                                        color: bubbleColor,
+                                      ),
                                     ),
                                   ),
-                                ),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 12,
-                                  ),
+                                  padding: !hasImage
+                                      ? const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 8,
+                                        )
+                                      : EdgeInsets.zero,
                                   decoration: BoxDecoration(
-                                    color: bubbleColor,
+                                    color: m.kind == 'text'
+                                        ? bubbleColor
+                                        : (hasImage ? null : colors.muted),
                                     borderRadius: AppTheme.messageRadius,
                                   ),
                                   child: _controller != null
@@ -167,6 +309,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                                           config: quill.QuillEditorConfig(
                                             scrollable: false,
                                             showCursor: false,
+                                            enableSelectionToolbar: false,
                                             padding: EdgeInsets.zero,
                                             showCodeBlockLineNumbers: false,
                                             textSelectionThemeData:
@@ -183,96 +326,118 @@ class _MessageBubbleState extends State<MessageBubble> {
                                               CrossAxisAlignment.start,
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            if (m.kind == 'image' &&
-                                                m.path != null &&
-                                                m.status != 'receiving')
-                                              Padding(
-                                                padding: const EdgeInsets.only(
-                                                  bottom: 10,
-                                                ),
-                                                child: ShadContextMenuRegion(
-                                                  items: [
-                                                    ShadContextMenuItem(
-                                                      enabled: !busy,
-                                                      leading: const Icon(
-                                                        LucideIcons.download,
-                                                        size: 14,
-                                                      ),
-                                                      onPressed: _save,
-                                                      child: const Text('另存为…'),
-                                                    ),
-                                                  ],
-                                                  child: ClipRRect(
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          6,
-                                                        ),
-                                                    child: Image.file(
-                                                      File(m.path!),
-                                                      width: min(
-                                                        width - 32,
-                                                        320,
-                                                      ),
-                                                      height: 200,
-                                                      fit: BoxFit.contain,
-                                                      cacheWidth: 800,
-                                                      errorBuilder: (_, _, _) =>
-                                                          const SizedBox(
-                                                            height: 64,
-                                                            child: Center(
-                                                              child: Text(
-                                                                '图片预览不可用',
+                                            if (hasImage)
+                                              ShadContextMenuRegion(
+                                                items: _menu(),
+                                                child: ClipRRect(
+                                                  borderRadius:
+                                                      BorderRadius.circular(6),
+                                                  child: Semantics(
+                                                    label: '查看图片',
+                                                    button: true,
+                                                    child: InkWell(
+                                                      onTap: _viewImage,
+                                                      hoverColor:
+                                                          Colors.transparent,
+                                                      highlightColor:
+                                                          Colors.transparent,
+                                                      splashFactory: NoSplash
+                                                          .splashFactory,
+                                                      child: ConstrainedBox(
+                                                        constraints:
+                                                            BoxConstraints(
+                                                              maxWidth: min(
+                                                                width,
+                                                                320,
                                                               ),
+                                                              maxHeight: 360,
                                                             ),
-                                                          ),
+                                                        child: Image.file(
+                                                          File(m.path!),
+                                                          fit: BoxFit.contain,
+                                                          errorBuilder:
+                                                              (
+                                                                _,
+                                                                _,
+                                                                _,
+                                                              ) => const SizedBox(
+                                                                height: 64,
+                                                                child: Center(
+                                                                  child: Text(
+                                                                    '图片预览不可用',
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                        ),
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
                                               ),
-                                            Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  m.kind == 'image'
-                                                      ? LucideIcons.image
-                                                      : LucideIcons.fileText,
-                                                  size: 30,
-                                                  color: colors.mutedForeground,
-                                                ),
-                                                const SizedBox(width: 12),
-                                                Flexible(
-                                                  child: Column(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Text(
-                                                        m.name ?? '附件',
-                                                        maxLines: 2,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                        style: const TextStyle(
-                                                          fontSize: 13,
-                                                          fontWeight:
-                                                              FontWeight.w500,
+                                            if (!hasImage)
+                                              ShadContextMenuRegion(
+                                                items: _menu(),
+                                                child: SizedBox(
+                                                  width: min(width - 24, 280),
+                                                  child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          vertical: 8,
                                                         ),
-                                                      ),
-                                                      const SizedBox(height: 4),
-                                                      Text(
-                                                        fileSize(m.size),
-                                                        style: TextStyle(
-                                                          fontSize: 11,
+                                                    child: Row(
+                                                      children: [
+                                                        Expanded(
+                                                          child: Column(
+                                                            crossAxisAlignment:
+                                                                CrossAxisAlignment
+                                                                    .start,
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              Text(
+                                                                m.name ?? '附件',
+                                                                maxLines: 2,
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
+                                                                style: const TextStyle(
+                                                                  fontSize: 13,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w500,
+                                                                ),
+                                                              ),
+                                                              const SizedBox(
+                                                                height: 6,
+                                                              ),
+                                                              Text(
+                                                                fileSize(
+                                                                  m.size,
+                                                                ),
+                                                                style: TextStyle(
+                                                                  fontSize: 11,
+                                                                  color: colors
+                                                                      .mutedForeground,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 16,
+                                                        ),
+                                                        Icon(
+                                                          _fileIcon(m.name),
+                                                          size: 32,
                                                           color: colors
                                                               .mutedForeground,
                                                         ),
-                                                      ),
-                                                    ],
+                                                      ],
+                                                    ),
                                                   ),
                                                 ),
-                                              ],
-                                            ),
+                                              ),
                                             if (busy)
                                               Padding(
                                                 padding: const EdgeInsets.only(
@@ -280,23 +445,6 @@ class _MessageBubbleState extends State<MessageBubble> {
                                                 ),
                                                 child: ShadProgress(
                                                   value: m.progress,
-                                                ),
-                                              ),
-                                            if (m.kind != 'image' &&
-                                                m.path != null &&
-                                                !busy)
-                                              Padding(
-                                                padding: const EdgeInsets.only(
-                                                  top: 10,
-                                                ),
-                                                child: ShadButton.outline(
-                                                  size: ShadButtonSize.sm,
-                                                  leading: const Icon(
-                                                    LucideIcons.download,
-                                                    size: 14,
-                                                  ),
-                                                  onPressed: _save,
-                                                  child: const Text('另存为'),
                                                 ),
                                               ),
                                           ],
@@ -351,40 +499,12 @@ class _MessageBubbleState extends State<MessageBubble> {
                       ),
                     ),
                   ),
-                  if (_controller != null)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 4, right: 4, top: 4),
-                      child: IgnorePointer(
-                        ignoring: !_hovered && !_focused,
-                        child: Opacity(
-                          opacity: _hovered || _focused ? 1 : 0,
-                          child: ShadTooltip(
-                            builder: (_) => const Text('复制，保留格式'),
-                            child: Semantics(
-                              label: '复制消息，保留格式',
-                              child: ShadIconButton.ghost(
-                                icon: const Icon(LucideIcons.copy, size: 12),
-                                width: 28,
-                                height: 28,
-                                onPressed: () async {
-                                  try {
-                                    await copyRichText(m);
-                                  } on Object catch (error) {
-                                    widget.onError('复制失败：$error');
-                                  }
-                                },
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                 ],
               ),
-            ),
-          ),
-        );
-      },
+            );
+          },
+        ),
+      ),
     );
   }
 }

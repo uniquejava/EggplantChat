@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:eggplant_chat/message_bubble.dart';
 import 'package:eggplant_chat/app_theme.dart';
 import 'package:eggplant_chat/models.dart';
@@ -8,81 +10,6 @@ import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 void main() {
-  testWidgets(
-    'copy appears on hover or keyboard focus without shifting messages',
-    (tester) async {
-      await tester.pumpWidget(
-        ShadApp(
-          localizationsDelegates: const [
-            quill.FlutterQuillLocalizations.delegate,
-          ],
-          home: Scaffold(
-            body: Column(
-              children: [
-                for (var i = 0; i < 2; i++)
-                  MessageBubble(
-                    senderName: '对方',
-                    message: ChatMessage(
-                      id: '$i',
-                      peerId: 'peer',
-                      outgoing: false,
-                      kind: 'text',
-                      time: DateTime.now(),
-                      delta: [
-                        {'insert': '消息 $i\n'},
-                      ],
-                    ),
-                    onRetry: () {},
-                    onError: (_) {},
-                  ),
-              ],
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      final copies = find.byIcon(LucideIcons.copy);
-      double opacity(int index) => tester
-          .widget<Opacity>(
-            find
-                .ancestor(of: copies.at(index), matching: find.byType(Opacity))
-                .last,
-          )
-          .opacity;
-      expect(opacity(0), 0);
-      expect(opacity(1), 0);
-      final position = tester.getTopLeft(find.byType(MessageBubble).last);
-      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-      await mouse.addPointer(location: const Offset(790, 590));
-      await mouse.moveTo(
-        tester.getCenter(find.byType(quill.QuillEditor).first),
-      );
-      await tester.pump();
-      expect(opacity(0), 1);
-      expect(opacity(1), 0);
-      expect(tester.getTopLeft(find.byType(MessageBubble).last), position);
-      await mouse.moveTo(const Offset(790, 590));
-      await tester.pump();
-      expect(opacity(0), 0);
-      final editor = tester.widget<quill.QuillEditor>(
-        find.byType(quill.QuillEditor).first,
-      );
-      editor.focusNode.requestFocus();
-      editor.controller.updateSelection(
-        const TextSelection(baseOffset: 0, extentOffset: 4),
-        quill.ChangeSource.local,
-      );
-      await tester.pump();
-      expect(opacity(0), 1);
-      expect(
-        editor.config.textSelectionThemeData!.selectionColor!.a,
-        lessThan(.5),
-      );
-      expect(tester.takeException(), isNull);
-      await mouse.removePointer();
-    },
-  );
-
   for (final dark in [false, true]) {
     testWidgets('chat sides, avatars and content sizing (dark: $dark)', (
       tester,
@@ -122,6 +49,7 @@ void main() {
                         ],
                       ),
                       onRetry: () {},
+                      onDelete: () async {},
                       onError: (_) {},
                     ),
                 ],
@@ -172,6 +100,111 @@ void main() {
     });
   }
 
+  testWidgets('text context menu invokes delete without save as', (
+    tester,
+  ) async {
+    var deleted = false;
+    await tester.pumpWidget(
+      ShadApp(
+        home: Scaffold(
+          body: MessageBubble(
+            senderName: '我',
+            message: ChatMessage(
+              id: newId(),
+              peerId: newId(),
+              outgoing: true,
+              kind: 'text',
+              time: DateTime.now(),
+              delta: [
+                {'insert': 'hello\n'},
+              ],
+              status: 'sent',
+            ),
+            onRetry: () {},
+            onDelete: () async {
+              deleted = true;
+            },
+            onError: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byType(quill.QuillEditor),
+      buttons: kSecondaryMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextSelectionToolbar), findsNothing);
+    expect(find.text('Copy'), findsOneWidget);
+    expect(find.byIcon(LucideIcons.copy), findsNothing);
+    expect(find.text('Save as…'), findsNothing);
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(deleted, isFalse);
+    expect(find.text('删除这条消息？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(deleted, isFalse);
+    await tester.tap(
+      find.byType(quill.QuillEditor),
+      buttons: kSecondaryMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(deleted, isTrue);
+  });
+
+  for (final entry in {
+    'report.pdf': LucideIcons.fileText,
+    'table.XLSX': LucideIcons.fileSpreadsheet,
+    'backup.zip': LucideIcons.fileArchive,
+    'README': LucideIcons.file,
+  }.entries) {
+    testWidgets('file card icon and context menu: ${entry.key}', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(
+            body: MessageBubble(
+              senderName: '我',
+              message: ChatMessage(
+                id: newId(),
+                peerId: newId(),
+                outgoing: true,
+                kind: 'file',
+                time: DateTime.now(),
+                name: entry.key,
+                path: '/tmp/report.pdf',
+                status: 'sent',
+              ),
+              onRetry: () {},
+              onDelete: () async {},
+              onError: (_) {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('PDF'), findsNothing);
+      expect(find.byIcon(entry.value), findsOneWidget);
+      expect(find.text('另存为'), findsNothing);
+      await tester.tap(
+        find.text(entry.key),
+        buttons: kSecondaryMouseButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Save as…'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   for (final outgoing in [true, false]) {
     testWidgets('image save is in context menu (outgoing: $outgoing)', (
       tester,
@@ -186,6 +219,13 @@ void main() {
         path: 'assets/branding/app-icon-1024-raw.png',
         status: 'sent',
       );
+      await tester.pumpWidget(const ShadApp(home: Scaffold()));
+      await tester.runAsync(
+        () => precacheImage(
+          FileImage(File(message.path!)),
+          tester.element(find.byType(Scaffold)),
+        ),
+      );
       await tester.pumpWidget(
         ShadApp(
           home: Scaffold(
@@ -193,6 +233,7 @@ void main() {
               senderName: outgoing ? '我' : '对方',
               message: message,
               onRetry: () {},
+              onDelete: () async {},
               onError: (_) {},
             ),
           ),
@@ -200,14 +241,22 @@ void main() {
       );
       await tester.pump();
       expect(find.text('另存为'), findsNothing);
-      expect(find.text('另存为…'), findsNothing);
+      expect(find.text('Save as…'), findsNothing);
+      await tester.tap(find.byType(Image));
+      await tester.pumpAndSettle();
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.text('关闭'));
+      await tester.pumpAndSettle();
+      expect(find.byType(InteractiveViewer), findsNothing);
+      expect(tester.getSize(find.byType(Image)).width, lessThanOrEqualTo(320));
+      expect(tester.getSize(find.byType(Image)).height, lessThanOrEqualTo(360));
       await tester.tap(
         find.byType(Image),
         buttons: kSecondaryMouseButton,
         kind: PointerDeviceKind.mouse,
       );
       await tester.pumpAndSettle();
-      expect(find.text('另存为…'), findsOneWidget);
+      expect(find.text('Save as…'), findsOneWidget);
     });
   }
 }

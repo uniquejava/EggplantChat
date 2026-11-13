@@ -28,6 +28,71 @@ void main() {
     await temporary.delete(recursive: true);
   });
 
+  test('discovery ends and refresh receives a passive device reply', () async {
+    await a.close();
+    a = LanService(Directory('${temporary.path}/a'));
+    await a.start(listenPort: 0);
+    expect(a.discovering, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 3200));
+    expect(a.discovering, isFalse);
+
+    final socket = await RawDatagramSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final replies = <Map<String, dynamic>>[];
+    final subscription = socket.listen((event) {
+      final packet = socket.receive();
+      if (packet != null) {
+        replies.add(
+          jsonDecode(utf8.decode(packet.data)) as Map<String, dynamic>,
+        );
+      }
+    });
+    try {
+      socket.send(
+        utf8.encode(
+          jsonEncode({
+            'app': 'eggplant-chat',
+            'v': 1,
+            'id': b.id,
+            'name': b.name,
+            'port': b.port,
+            'platform': 'windows',
+            'discover': true,
+          }),
+        ),
+        InternetAddress.loopbackIPv4,
+        discoveryPort,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(replies.single['id'], a.id);
+      expect(replies.single['discover'], isFalse);
+      expect(a.discovering, isFalse);
+      a.refreshDevices();
+      expect(a.discovering, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 3200));
+      expect(a.discovering, isFalse);
+    } finally {
+      await subscription.cancel();
+      socket.close();
+    }
+  });
+
+  test('delete persists locally without deleting remote history', () async {
+    final peer = await a.connect('127.0.0.1', b.port);
+    await a.sendText(peer, [
+      {'insert': 'delete me\n'},
+    ]);
+    await a.deleteMessage(a.messages.single);
+    expect(a.messages, isEmpty);
+    expect(b.messages, hasLength(1));
+    await a.close();
+    a = LanService(Directory('${temporary.path}/a'));
+    await a.start(listenPort: 0, discovery: false);
+    expect(a.messages, isEmpty);
+  });
+
   Future<Peer> connect() => a.connect('127.0.0.1', b.port);
 
   Future<HttpClientResponse> post(
