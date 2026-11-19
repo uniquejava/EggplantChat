@@ -4,13 +4,16 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:basic_utils/basic_utils.dart';
+import 'package:characters/characters.dart';
 import 'package:crypto/crypto.dart';
 
 import 'models.dart';
 
 const lanPort = 53318;
 const discoveryPort = 53319;
+const _maxDiscoveryBytes = 2048;
 const _jsonLimit = 2 * 1024 * 1024;
+const _uploadIdleTimeout = Duration(seconds: 30);
 
 bool _isLanAddress(InternetAddress address) {
   if (address.type != InternetAddressType.IPv4) return false;
@@ -38,7 +41,11 @@ Map<String, String> _credentials() {
 
 class LanService {
   LanService(this.directory, {String? deviceName})
-    : name = deviceName ?? Platform.localHostname;
+    : name = _localName(deviceName ?? Platform.localHostname);
+
+  static String _localName(String value) => checkedDeviceName(
+    value.trim().characters.take(maxDeviceNameLength).toString(),
+  );
 
   final Directory directory;
   final _changes = StreamController<void>.broadcast();
@@ -74,7 +81,10 @@ class LanService {
       final json =
           jsonDecode(await stateFile.readAsString()) as Map<String, dynamic>;
       id = checkedId(json, 'id');
-      name = requiredString(json, 'name', max: 80);
+      final storedName = json['name'];
+      if (storedName is String && storedName.trim().isNotEmpty) {
+        name = _localName(storedName);
+      }
       for (final p in json['peers'] as List) {
         final peer = Peer.fromJson(Map<String, dynamic>.from(p));
         peers[peer.id] = peer;
@@ -158,18 +168,24 @@ class LanService {
     notify();
   }
 
-  Future<void> save() {
-    final data = jsonEncode({
-      'id': id,
-      'name': name,
-      'peers': peers.values.map((p) => p.toJson()).toList(),
-      'messages': messages.map((m) => m.toJson()).toList(),
-    });
+  Future<void> save() => _save();
+
+  Future<void> _save({ChatMessage? outgoing}) {
     final write = _writes.then((_) async {
+      final data = jsonEncode({
+        'id': id,
+        'name': name,
+        'peers': peers.values.map((p) => p.toJson()).toList(),
+        'messages': [
+          ...messages.map((m) => m.toJson()),
+          if (outgoing != null) outgoing.toJson(),
+        ],
+      });
       final target = File('${directory.path}/state.json');
       final temp = File('${directory.path}/state.json.tmp');
       await temp.writeAsString(data, flush: true);
       await temp.rename(target.path);
+      if (outgoing != null) messages.add(outgoing);
     });
     _writes = write.catchError((Object error) {
       warning = '聊天记录保存失败：$error';
@@ -216,17 +232,23 @@ class LanService {
     int targetPort, {
     bool request = false,
   }) {
-    final bytes = utf8.encode(
-      jsonEncode({
-        'app': 'eggplant-chat',
-        'v': 1,
-        'id': id,
-        'name': name,
-        'port': port,
-        'platform': Platform.operatingSystem,
-        'discover': request,
-      }),
-    );
+    final packet = {
+      'app': 'eggplant-chat',
+      'v': 1,
+      'id': id,
+      'name': name,
+      'port': port,
+      'platform': Platform.operatingSystem,
+      'discover': request,
+    };
+    var bytes = utf8.encode(jsonEncode(packet));
+    // Discovery carries a preview; the HTTPS handshake carries the full name.
+    var prefix = name.characters;
+    while (bytes.length > _maxDiscoveryBytes) {
+      prefix = prefix.take(prefix.length ~/ 2);
+      packet['name'] = '$prefix…';
+      bytes = utf8.encode(jsonEncode(packet));
+    }
     try {
       _udp?.send(bytes, address, targetPort);
     } on SocketException {
@@ -239,7 +261,7 @@ class LanService {
     Datagram? datagram;
     while ((datagram = _udp?.receive()) != null) {
       try {
-        if (datagram!.data.length > 2048) continue;
+        if (datagram!.data.length > _maxDiscoveryBytes) continue;
         final json =
             jsonDecode(utf8.decode(datagram.data)) as Map<String, dynamic>;
         if (json['app'] != 'eggplant-chat' || json['v'] != 1) continue;
@@ -247,7 +269,7 @@ class LanService {
         if (remoteId == id) continue;
         final peer = Peer(
           id: remoteId,
-          name: requiredString(json, 'name', max: 80),
+          name: checkedDeviceName(json['name']),
           host: datagram.address.address,
           port: checkedPort(json['port']),
           platform: requiredString(json, 'platform', max: 32),
@@ -638,9 +660,7 @@ class LanService {
       delta: checkedDelta(delta),
       status: 'sending',
     );
-    messages.add(message);
-    await save();
-    notify();
+    await _save(outgoing: message);
     await retry(message);
   }
 
@@ -652,38 +672,47 @@ class LanService {
     final messageId = newId();
     final folder = Directory('${directory.path}/sent/$messageId');
     await folder.create(recursive: true);
-    final snapshot = await file.copy('${folder.path}/content');
-    final size = await snapshot.length();
-    final image = RegExp(
-      r'\.(png|jpe?g|gif|webp|bmp)$',
-      caseSensitive: false,
-    ).hasMatch(name);
-    final message = ChatMessage(
-      id: messageId,
-      peerId: peer.id,
-      outgoing: true,
-      kind: image ? 'image' : 'file',
-      time: DateTime.now(),
-      name: name,
-      size: size,
-      digest: (await sha256.bind(snapshot.openRead()).first).toString(),
-      path: snapshot.path,
-      status: 'sending',
-    );
-    messages.add(message);
-    await save();
-    notify();
+    final ChatMessage message;
+    try {
+      final snapshot = await file.copy('${folder.path}/content');
+      final size = await snapshot.length();
+      final image = RegExp(
+        r'\.(png|jpe?g|gif|webp|bmp)$',
+        caseSensitive: false,
+      ).hasMatch(name);
+      message = ChatMessage(
+        id: messageId,
+        peerId: peer.id,
+        outgoing: true,
+        kind: image ? 'image' : 'file',
+        time: DateTime.now(),
+        name: name,
+        size: size,
+        digest: (await sha256.bind(snapshot.openRead()).first).toString(),
+        path: snapshot.path,
+        status: 'sending',
+      );
+      await _save(outgoing: message);
+    } on Object {
+      try {
+        await folder.delete(recursive: true);
+      } on FileSystemException {
+        // Preserve the original snapshot or save error.
+      }
+      rethrow;
+    }
     await retry(message);
   }
 
   Future<void> retry(ChatMessage message) async {
     if (!message.outgoing || !_inflight.add('send/${message.id}')) return;
-    final peer = peers[message.peerId]!;
     message.status = 'sending';
     message.error = null;
     message.progress = 0;
     notify();
     try {
+      final peer = peers[message.peerId];
+      if (peer == null) throw StateError('设备已断开连接');
       if (message.kind == 'text') {
         await _post(
           peer.host,
@@ -725,23 +754,21 @@ class LanService {
             ),
           );
           request.contentLength = message.size;
+          request.bufferOutput = false;
           var sent = 0;
           var update = DateTime.now();
-          await request
-              .addStream(
-                file.openRead().map((chunk) {
-                  sent += chunk.length;
-                  message.progress = message.size == 0
-                      ? 1
-                      : sent / message.size;
-                  if (DateTime.now().difference(update).inMilliseconds > 100) {
-                    notify();
-                    update = DateTime.now();
-                  }
-                  return chunk;
-                }),
-              )
-              .timeout(const Duration(minutes: 30));
+          await for (final chunk in file.openRead().timeout(
+            _uploadIdleTimeout,
+          )) {
+            request.add(chunk);
+            await request.flush().timeout(_uploadIdleTimeout);
+            sent += chunk.length;
+            message.progress = sent / message.size;
+            if (DateTime.now().difference(update).inMilliseconds > 100) {
+              notify();
+              update = DateTime.now();
+            }
+          }
           final response = await request.close().timeout(
             const Duration(minutes: 5),
           );
@@ -761,9 +788,14 @@ class LanService {
       message.status = 'failed';
       message.error = '发送失败：$error';
     } finally {
-      _inflight.remove('send/${message.id}');
-      await save();
-      notify();
+      try {
+        await save();
+      } on Object {
+        // The message belongs to history after its first durable save.
+      } finally {
+        _inflight.remove('send/${message.id}');
+        notify();
+      }
     }
   }
 

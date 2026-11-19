@@ -1,6 +1,19 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:characters/characters.dart';
+
+const maxDeviceNameLength = 80;
+
+String checkedDeviceName(Object? value) {
+  if (value is! String ||
+      value.trim().isEmpty ||
+      value.characters.length > maxDeviceNameLength) {
+    throw const FormatException('设备名称须为 1 至 80 个字符');
+  }
+  return value.trim();
+}
+
 String newId() => List.generate(
   16,
   (_) => Random.secure().nextInt(256),
@@ -143,7 +156,7 @@ class Peer {
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
     id: checkedId(json, 'id'),
-    name: requiredString(json, 'name', max: 80),
+    name: checkedDeviceName(json['name']),
     host: requiredString(json, 'host'),
     port: checkedPort(json['port']),
     platform: requiredString(json, 'platform', max: 32),

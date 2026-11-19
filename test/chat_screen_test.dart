@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:eggplant_chat/chat_screen.dart';
@@ -15,6 +16,7 @@ class RecordingService extends LanService {
   }
 
   final connections = <(String, int, String?)>[];
+  Future<void>? pendingText;
 
   @override
   int get port => lanPort;
@@ -40,6 +42,7 @@ class RecordingService extends LanService {
 
   @override
   Future<void> sendText(Peer peer, List<dynamic> delta) async {
+    await pendingText;
     messages.add(
       ChatMessage(
         id: newId(),
@@ -77,6 +80,42 @@ void main() {
     await tester.pump();
     await closing;
   }
+
+  testWidgets('failed handoff restores the originating conversation draft', (
+    tester,
+  ) async {
+    final delivery = Completer<void>();
+    final service = RecordingService()..pendingText = delivery.future;
+    for (final name in ['设备 B', '设备 C']) {
+      final peer = Peer(
+        id: newId(),
+        name: name,
+        host: '192.168.1.2',
+        port: lanPort,
+        platform: 'macos',
+      );
+      service.peers[peer.id] = peer;
+    }
+    await showScreen(tester, service);
+    quill.QuillController controller() => tester
+        .widget<quill.QuillEditor>(find.byType(quill.QuillEditor))
+        .controller;
+    controller().document = quill.Document.fromJson([
+      {'insert': '待发送\n'},
+    ]);
+    await tester.pump();
+    await tester.tap(find.text('发送'));
+    await tester.pump();
+    await tester.tap(find.text('设备 C').first);
+    await tester.pump();
+    await tester.tap(find.text('设备 B').first);
+    await tester.pump();
+    expect(find.text('发送中'), findsOneWidget);
+    delivery.completeError(StateError('test failure'));
+    await tester.pump();
+    expect(controller().document.toPlainText(), '待发送\n');
+    await closeScreen(tester, service);
+  });
 
   testWidgets(
     'dates are centered groups, including midnight, without per-message times',

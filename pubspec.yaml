@@ -19,11 +19,14 @@ dependencies:
   path_provider: ^2.1.6
   window_manager: ^0.5.1
   basic_utils: ^5.8.2
+  characters: ^1.4.1
   crypto: ^3.0.8
   super_clipboard: ^0.9.1
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 

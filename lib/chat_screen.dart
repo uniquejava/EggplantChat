@@ -10,6 +10,7 @@ import 'chat_composer.dart';
 import 'lan_service.dart';
 import 'message_bubble.dart';
 import 'models.dart';
+import 'rich_clipboard.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -25,8 +26,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final _scroll = ScrollController();
-  final _drafts = <String, List<dynamic>>{};
-  final _draftFiles = <String, List<File>>{};
+  final _drafts = <String, ChatDraft>{};
   final _unread = <String, int>{};
   late StreamSubscription<void> _subscription;
   String? _selected;
@@ -83,6 +83,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _subscription.cancel();
     _scroll.dispose();
+    for (final draft in _drafts.values) {
+      draft.dispose();
+    }
     super.dispose();
   }
 
@@ -257,8 +260,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ShadButton(
             onPressed: () async {
               if (name.text.trim().isEmpty) return;
-              service.name = name.text.trim();
               try {
+                service.name = checkedDeviceName(name.text);
                 await service.save();
                 service.notify();
                 if (dialogContext.mounted) Navigator.of(dialogContext).pop();
@@ -275,7 +278,7 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             const Text('设备名称'),
             const SizedBox(height: 8),
-            ShadInput(controller: name, maxLength: 80),
+            ShadInput(controller: name, maxLength: maxDeviceNameLength),
             const SizedBox(height: 20),
             const Text('局域网地址'),
             const SizedBox(height: 8),
@@ -838,22 +841,12 @@ class _ChatScreenState extends State<ChatScreen> {
         ChatComposer(
           key: ValueKey(peer.id),
           directory: service.directory,
-          initialDelta: _drafts[peer.id],
-          initialFiles: _draftFiles[peer.id] ?? [],
-          onDraftChanged: (delta, files) {
-            _drafts[peer.id] = delta;
-            _draftFiles[peer.id] = files;
-          },
+          draft: _drafts.putIfAbsent(peer.id, ChatDraft.new),
           onError: _error,
-          onSend: (delta, files) async {
-            if (delta.any(
-              (op) => (op['insert'] as String? ?? '').trim().isNotEmpty,
-            )) {
-              await service.sendText(peer, delta);
-            }
-            for (final file in files) {
-              await service.sendFile(peer, file);
-            }
+          onSendText: (delta) => service.sendText(peer, delta),
+          onSendFile: (file) async {
+            await service.sendFile(peer, file);
+            await deleteClipboardImage(file);
           },
         ),
       ],

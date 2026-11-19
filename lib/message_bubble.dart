@@ -234,7 +234,7 @@ class _MessageBubbleState extends State<MessageBubble> {
     return ShadContextMenu(
       controller: _contextMenu,
       anchor: ShadGlobalAnchor(_menuPosition),
-      items: _menu(),
+      items: m.kind == 'text' ? _menu() : const [],
       child: Listener(
         onPointerDown: (event) {
           if (m.kind == 'text' && event.buttons == kSecondaryMouseButton) {

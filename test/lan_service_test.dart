@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -32,6 +33,7 @@ void main() {
     await a.close();
     a = LanService(Directory('${temporary.path}/a'));
     await a.start(listenPort: 0);
+    a.name = '👨‍👩‍👧‍👦' * maxDeviceNameLength;
     expect(a.discovering, isTrue);
     await Future<void>.delayed(const Duration(milliseconds: 3200));
     expect(a.discovering, isFalse);
@@ -68,6 +70,11 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
       expect(replies.single['id'], a.id);
       expect(replies.single['discover'], isFalse);
+      expect(replies.single['name'], endsWith('…'));
+      expect(
+        utf8.encode(jsonEncode(replies.single)).length,
+        lessThanOrEqualTo(2048),
+      );
       expect(a.discovering, isFalse);
       a.refreshDevices();
       expect(a.discovering, isTrue);
@@ -78,6 +85,22 @@ void main() {
       socket.close();
     }
   });
+
+  test(
+    'an 80-character Unicode device name survives restart and connection',
+    () async {
+      final name = '😀' * maxDeviceNameLength;
+      a.name = name;
+      await a.save();
+      await a.close();
+      a = LanService(Directory('${temporary.path}/a'));
+      await a.start(listenPort: 0, discovery: false);
+      expect(a.name, name);
+      await a.connect('127.0.0.1', b.port);
+      expect(b.peers[a.id]!.name, name);
+      expect(() => checkedDeviceName('${name}a'), throwsFormatException);
+    },
+  );
 
   test('delete persists locally without deleting remote history', () async {
     final peer = await a.connect('127.0.0.1', b.port);
@@ -400,6 +423,32 @@ void main() {
     },
   );
 
+  test('an initial sender disk failure leaves no outgoing message', () async {
+    final peer = await connect();
+    final blocker = await Directory('${a.directory.path}/state.json.tmp')
+        .create();
+    final file = await File('${temporary.path}/draft.bin').writeAsBytes([1, 2]);
+    final delta = [
+      {'insert': '保留草稿\n'},
+    ];
+    await expectLater(
+      a.sendText(peer, delta),
+      throwsA(isA<FileSystemException>()),
+    );
+    await expectLater(
+      a.sendFile(peer, file),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(a.messages, isEmpty);
+    expect(b.messages, isEmpty);
+    expect(await File(file.path).readAsBytes(), [1, 2]);
+    expect(await Directory('${a.directory.path}/sent').list().isEmpty, isTrue);
+    await blocker.delete();
+    await a.sendText(peer, delta);
+    expect(a.messages.single.status, 'sent');
+    expect(b.messages.single.plainText, '保留草稿\n');
+  });
+
   test('text retry persists a message after a failed disk write', () async {
     final peer = await connect();
     final blocker = await Directory('${b.directory.path}/state.json.tmp')
@@ -416,6 +465,75 @@ void main() {
     b = LanService(directory);
     await b.start(listenPort: 0, discovery: false);
     expect(b.messages.single.plainText, '必须保存\n');
+  });
+
+  test(
+    'delivery remains accepted when only the final disk write fails',
+    () async {
+      final peer = await connect();
+      final blocker = Directory('${a.directory.path}/state.json.tmp');
+      final subscription = b.changes.listen((_) {
+        if (b.messages.isNotEmpty) blocker.createSync();
+      });
+      addTearDown(subscription.cancel);
+      await a.sendText(peer, [
+        {'insert': '已经发送\n'},
+      ]);
+      expect(a.messages.single.status, 'sent');
+      expect(a.warning, contains('聊天记录保存失败'));
+      final id = a.messages.single.id;
+      expect(b.messages.single.id, id);
+      await subscription.cancel();
+      await blocker.delete();
+      final directory = a.directory;
+      await a.close();
+      a = LanService(directory);
+      await a.start(listenPort: 0, discovery: false);
+      expect(a.messages.single.id, id);
+      expect(a.messages.single.status, 'failed');
+      await a.retry(a.messages.single);
+      expect(a.messages.single.status, 'sent');
+      expect(b.messages.single.id, id);
+    },
+  );
+
+  test('a peer that stops reading times out the upload', () async {
+    final peer = await connect();
+    final security = SecurityContext()
+      ..useCertificateChain('${b.directory.path}/certificate.pem')
+      ..usePrivateKey('${b.directory.path}/private-key.pem');
+    final server = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      security,
+    );
+    addTearDown(() => server.close(force: true));
+    final received = Completer<HttpRequest>();
+    server.listen(received.complete);
+    peer.port = server.port;
+    final file = File('${temporary.path}/stalled.bin');
+    final handle = await file.open(mode: FileMode.write);
+    await handle.truncate(16 * 1024 * 1024);
+    await handle.close();
+
+    await runZoned(
+      () => a.sendFile(peer, file),
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) {
+          return parent.createTimer(
+            zone,
+            duration == const Duration(seconds: 30)
+                ? const Duration(seconds: 1)
+                : duration,
+            callback,
+          );
+        },
+      ),
+    ).timeout(const Duration(seconds: 8));
+    expect((await received.future).uri.path, '/v1/file');
+    expect(a.messages.single.status, 'failed');
+    expect(a.messages.single.error, contains('TimeoutException'));
+    expect(a.messages.single.progress, lessThan(1));
   });
 
   test('restart marks interrupted incoming attachments as failed', () async {

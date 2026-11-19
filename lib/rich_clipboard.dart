@@ -7,6 +7,20 @@ import 'package:vsc_quill_delta_to_html/vsc_quill_delta_to_html.dart';
 
 import 'models.dart';
 
+final _pastedImages = Expando<bool>();
+
+Future<void> deleteClipboardImage(File file) async {
+  if (_pastedImages[file] != true) return;
+  try {
+    await file.delete();
+    _pastedImages[file] = null;
+  } on PathNotFoundException {
+    _pastedImages[file] = null;
+  } on FileSystemException {
+    // Cleanup must not turn a successful handoff into a failed send.
+  }
+}
+
 String richTextHtml(List<dynamic> delta) => QuillDeltaToHtmlConverter(
   delta.map((op) => Map<String, dynamic>.from(op)).toList(),
   ConverterOptions.forEmail(),
@@ -64,11 +78,14 @@ Future<File?> clipboardImage(Directory directory) async {
     return null;
   }
   final result = Completer<File?>();
-  reader.getFile(Formats.png, (image) async {
+  final progress = reader.getFile(Formats.png, (image) async {
+    File? file;
     try {
       final folder = Directory('${directory.path}/clipboard');
       await folder.create(recursive: true);
-      final file = File('${folder.path}/${newId()}.png');
+      file = File('${folder.path}/${newId()}.png');
+      await file.create(exclusive: true);
+      _pastedImages[file] = true;
       final sink = file.openWrite();
       try {
         await sink.addStream(image.getStream());
@@ -77,8 +94,9 @@ Future<File?> clipboardImage(Directory directory) async {
       }
       result.complete(file);
     } on Object catch (error, stack) {
+      if (file != null) await deleteClipboardImage(file);
       result.completeError(error, stack);
     }
   }, onError: (error) => result.completeError(error));
-  return result.future;
+  return progress == null ? null : result.future;
 }

@@ -13,21 +13,35 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import 'app_theme.dart';
 import 'rich_clipboard.dart';
 
+class ChatDraft extends ChangeNotifier {
+  ChatDraft({this._delta, List<File> files = const []})
+    : _files = List.of(files);
+
+  List<dynamic>? _delta;
+  List<File> _files;
+  bool _sending = false;
+
+  void _setSendState(bool sending, List<dynamic>? delta, List<File> files) {
+    _sending = sending;
+    _delta = delta;
+    _files = files;
+    if (hasListeners) notifyListeners();
+  }
+}
+
 class ChatComposer extends StatefulWidget {
   const ChatComposer({
     super.key,
     required this.directory,
-    required this.initialDelta,
-    required this.initialFiles,
-    required this.onDraftChanged,
-    required this.onSend,
+    required this.draft,
+    required this.onSendText,
+    required this.onSendFile,
     required this.onError,
   });
   final Directory directory;
-  final List<dynamic>? initialDelta;
-  final List<File> initialFiles;
-  final void Function(List<dynamic>, List<File>) onDraftChanged;
-  final Future<void> Function(List<dynamic>, List<File>) onSend;
+  final ChatDraft draft;
+  final Future<void> Function(List<dynamic>) onSendText;
+  final Future<void> Function(File) onSendFile;
   final void Function(String) onError;
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -38,19 +52,21 @@ class _ChatComposerState extends State<ChatComposer> {
   final _focus = FocusNode();
   final _editorKey = GlobalKey<quill.QuillRawEditorState>();
   final _scroll = ScrollController();
-  late final List<File> _files;
-  bool _sending = false;
+  List<File> get _files => widget.draft._files;
+  bool get _sending => widget.draft._sending;
+  int _sendGeneration = 0;
   bool _dragging = false;
 
   @override
   void initState() {
     super.initState();
-    _files = List.of(widget.initialFiles);
+    final draft = widget.draft;
     _controller = quill.QuillController(
-      document: widget.initialDelta == null
+      document: draft._delta == null
           ? quill.Document()
-          : quill.Document.fromJson(widget.initialDelta!),
+          : quill.Document.fromJson(draft._delta!),
       selection: const TextSelection.collapsed(offset: 0),
+      readOnly: _sending,
       config: quill.QuillControllerConfig(
         clipboardConfig: quill.QuillClipboardConfig(
           onClipboardPaste: _pasteImage,
@@ -64,33 +80,52 @@ class _ChatComposerState extends State<ChatComposer> {
         ),
       ),
     )..addListener(_draftChanged);
+    draft.addListener(_applyDraft);
   }
 
   void _draftChanged() {
-    widget.onDraftChanged(
-      _controller.document.toDelta().toJson(),
-      List.of(_files),
-    );
+    if (_sending) return;
+    widget.draft._delta = _controller.document.toDelta().toJson();
     if (mounted) setState(() {});
+  }
+
+  void _applyDraft() {
+    final draft = widget.draft;
+    final delta = draft._delta;
+    _controller.removeListener(_draftChanged);
+    _controller.readOnly = _sending;
+    _controller.document = delta == null
+        ? quill.Document()
+        : quill.Document.fromJson(delta);
+    _controller.updateSelection(
+      const TextSelection.collapsed(offset: 0),
+      quill.ChangeSource.local,
+    );
+    _controller.addListener(_draftChanged);
+    setState(() {});
   }
 
   Future<bool> _pasteImage() async {
     if (_sending) return true;
+    final generation = _sendGeneration;
     try {
       final file = await clipboardImage(widget.directory);
       if (file == null) return false;
-      if (mounted) {
-        _files.add(file);
-        _draftChanged();
+      if (!mounted || _sending || generation != _sendGeneration) {
+        await deleteClipboardImage(file);
+        return true;
       }
+      _files.add(file);
+      _draftChanged();
       return true;
     } on Object catch (error) {
-      widget.onError('无法读取剪贴板：$error');
+      if (mounted) widget.onError('无法读取剪贴板：$error');
       return true;
     }
   }
 
   Future<void> _pick(bool images) async {
+    final generation = _sendGeneration;
     try {
       final selected = await openFiles(
         acceptedTypeGroups: images
@@ -103,7 +138,7 @@ class _ChatComposerState extends State<ChatComposer> {
               ]
             : [],
       );
-      if (!mounted) return;
+      if (!mounted || _sending || generation != _sendGeneration) return;
       _files.addAll(selected.map((file) => File(file.path)));
       _draftChanged();
     } on Object catch (error) {
@@ -112,35 +147,36 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 
   Future<void> _send() async {
-    if (_sending ||
-        _controller.document.toPlainText().trim().isEmpty && _files.isEmpty) {
-      return;
-    }
-    final delta = _controller.document.toDelta().toJson();
-    final files = List<File>.of(_files);
+    final hasText = _controller.document.toPlainText().trim().isNotEmpty;
+    if (_sending || !hasText && _files.isEmpty) return;
+
+    final draft = widget.draft;
+    final sendText = widget.onSendText;
+    final sendFile = widget.onSendFile;
+    final onError = widget.onError;
+    List<dynamic>? remainingText = _controller.document.toDelta().toJson();
+    final files = _files;
     final selection = _controller.selection;
-    setState(() => _sending = true);
-    _controller.readOnly = true;
-    _files.clear();
-    _controller.document = quill.Document();
-    _controller.updateSelection(
-      const TextSelection.collapsed(offset: 0),
-      quill.ChangeSource.local,
-    );
-    _draftChanged();
+    var nextFile = 0;
+    _sendGeneration++;
+    draft._setSendState(true, null, []);
     try {
-      await widget.onSend(delta, files);
+      if (hasText) {
+        await sendText(remainingText);
+        remainingText = null;
+      }
+      for (; nextFile < files.length; nextFile++) {
+        await sendFile(files[nextFile]);
+      }
+      remainingText = null;
     } on Object catch (error) {
-      if (!mounted) return;
-      _files.addAll(files);
-      _controller.document = quill.Document.fromJson(delta);
-      _controller.updateSelection(selection, quill.ChangeSource.local);
-      _draftChanged();
-      widget.onError('发送失败：$error');
+      onError('发送失败：$error');
     } finally {
+      draft._setSendState(false, remainingText, files.sublist(nextFile));
       if (mounted) {
-        _controller.readOnly = false;
-        setState(() => _sending = false);
+        if (remainingText != null) {
+          _controller.updateSelection(selection, quill.ChangeSource.local);
+        }
         _focus.requestFocus();
       }
     }
@@ -162,6 +198,7 @@ class _ChatComposerState extends State<ChatComposer> {
 
   @override
   void dispose() {
+    widget.draft.removeListener(_applyDraft);
     _controller.removeListener(_draftChanged);
     _controller.dispose();
     _focus.dispose();
@@ -177,15 +214,19 @@ class _ChatComposerState extends State<ChatComposer> {
       onDragEntered: (_) => setState(() => _dragging = true),
       onDragExited: (_) => setState(() => _dragging = false),
       onDragDone: (detail) async {
+        final generation = _sendGeneration;
         setState(() => _dragging = false);
+        final files = <File>[];
         for (final file in detail.files) {
           if (await FileSystemEntity.isFile(file.path)) {
-            _files.add(File(file.path));
+            files.add(File(file.path));
           } else {
             widget.onError('请选择文件；文件夹可压缩后发送');
           }
         }
-        if (mounted) _draftChanged();
+        if (!mounted || _sending || generation != _sendGeneration) return;
+        _files.addAll(files);
+        _draftChanged();
       },
       child: Container(
         decoration: BoxDecoration(
@@ -209,9 +250,10 @@ class _ChatComposerState extends State<ChatComposer> {
                           enabled: !_sending,
                           leading: const Icon(LucideIcons.paperclip, size: 14),
                           trailing: const Icon(LucideIcons.x, size: 12),
-                          onPressed: () {
-                            _files.remove(file);
+                          onPressed: () async {
+                            if (_sending || !_files.remove(file)) return;
                             _draftChanged();
+                            await deleteClipboardImage(file);
                           },
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 170),

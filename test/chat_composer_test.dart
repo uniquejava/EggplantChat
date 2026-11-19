@@ -19,7 +19,8 @@ void main() {
 
   Future<quill.QuillEditor> showComposer(
     WidgetTester tester, {
-    required Future<void> Function(List<dynamic>, List<File>) onSend,
+    required Future<void> Function(List<dynamic>) onSendText,
+    Future<void> Function(File)? onSendFile,
     List<File> files = const [],
     void Function(String)? onError,
   }) async {
@@ -31,10 +32,9 @@ void main() {
         home: Scaffold(
           body: ChatComposer(
             directory: Directory.systemTemp,
-            initialDelta: delta,
-            initialFiles: files,
-            onDraftChanged: (_, _) {},
-            onSend: onSend,
+            draft: ChatDraft(delta: delta, files: files),
+            onSendText: onSendText,
+            onSendFile: onSendFile ?? (_) async {},
             onError: onError ?? (_) {},
           ),
         ),
@@ -60,7 +60,7 @@ void main() {
     final sent = <List<dynamic>>[];
     final editor = await showComposer(
       tester,
-      onSend: (text, _) {
+      onSendText: (text) {
         sent.add(text);
         return delivery.future;
       },
@@ -80,7 +80,7 @@ void main() {
     var sends = 0;
     final editor = await showComposer(
       tester,
-      onSend: (_, _) async {
+      onSendText: (_) async {
         sends++;
       },
     );
@@ -96,7 +96,7 @@ void main() {
     var sends = 0;
     await showComposer(
       tester,
-      onSend: (_, _) async {
+      onSendText: (_) async {
         sends++;
       },
     );
@@ -131,10 +131,7 @@ void main() {
     final editor = await showComposer(
       tester,
       files: [file],
-      onSend: (_, files) {
-        expect(files, [file]);
-        return delivery.future;
-      },
+      onSendText: (_) => delivery.future,
       onError: errors.add,
     );
     await tester.tap(find.text('发送'));
@@ -146,5 +143,40 @@ void main() {
     expect(editor.controller.document.toDelta().toJson(), delta);
     expect(find.text('draft.png'), findsOneWidget);
     expect(errors.single, contains('发送失败'));
+  });
+
+  testWidgets('retry only sends the unaccepted remainder of a batch', (
+    tester,
+  ) async {
+    final first = File('/tmp/accepted.png');
+    final second = File('/tmp/failed.png');
+    final third = File('/tmp/waiting.png');
+    final attempts = <File>[];
+    var texts = 0;
+    final editor = await showComposer(
+      tester,
+      files: [first, second, third],
+      onSendText: (_) async => texts++,
+      onSendFile: (file) async {
+        attempts.add(file);
+        if (file == second && attempts.length == 2) {
+          throw StateError('test failure');
+        }
+      },
+    );
+    await tester.tap(find.text('发送'));
+    await tester.pump();
+    expect(editor.controller.document.toPlainText(), '\n');
+    expect(find.text('accepted.png'), findsNothing);
+    expect(find.text('failed.png'), findsOneWidget);
+    expect(find.text('waiting.png'), findsOneWidget);
+    expect(attempts, [first, second]);
+
+    await tester.tap(find.text('发送'));
+    await tester.pump();
+    expect(texts, 1);
+    expect(attempts, [first, second, second, third]);
+    expect(find.text('failed.png'), findsNothing);
+    expect(find.text('waiting.png'), findsNothing);
   });
 }

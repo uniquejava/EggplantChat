@@ -214,7 +214,7 @@ void main() {
   }
 
   for (final outgoing in [true, false]) {
-    testWidgets('image save is in context menu (outgoing: $outgoing)', (
+    testWidgets('image menu closes after Copy (outgoing: $outgoing)', (
       tester,
     ) async {
       final message = ChatMessage(
@@ -265,6 +265,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Save as…'), findsOneWidget);
+      await tester.tap(find.text('Copy'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy'), findsNothing);
     });
   }
 }
